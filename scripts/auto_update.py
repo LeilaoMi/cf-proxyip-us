@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import json
+import socket
 import subprocess
 import sys
 import time
@@ -71,9 +72,9 @@ def verify_live() -> None:
     bot, _ = fetch(f"{LIST_DOMAIN}/all.txt?t={TOKEN}&r={int(time.time())}", ua="curl/8.0")
     if bot != 403:
         raise RuntimeError(f"curl UA should be 403, got {bot}")
-    resolved = capture(["bash", "-lc", f"dig +short {PROXY_DOMAIN} A | sort"], check=False).strip().splitlines()
+    resolved = sorted({info[4][0] for info in socket.getaddrinfo(PROXY_DOMAIN, 443, family=socket.AF_INET, type=socket.SOCK_STREAM)})
     expected = sorted(current_top5())
-    if sorted(resolved) != expected:
+    if resolved != expected:
         raise RuntimeError(f"DNS mismatch: {resolved} != {expected}")
 
 

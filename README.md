@@ -101,8 +101,17 @@ python3 scripts/auto_update.py
 6. 驗證 `list.leilaomi.cc.cd`、接口防護、DNS Top 5；
 7. 若數據有變化，自動 commit 並 push 到 GitHub。
 
-Zo 已建立每 3 小時巡檢任務；無變更且無錯誤時保持安靜，Top 5 變更或失敗時通知。
+自動化不依賴 Zo Computer；已遷移到 GitHub Actions，每 3 小時在 GitHub 託管 runner 執行一次，避免 Zo 休眠導致漏跑。需要在 GitHub repo secrets 中保存 `CLOUDFLARE_API_TOKEN`。
+
+## GitHub Actions
+
+自動化入口：`file .github/workflows/proxyip-auto-update.yml`。
+
+- Cron：每 3 小時一次，`17 */3 * * *` UTC。
+- 可手動執行：GitHub repo → Actions → ProxyIP Auto Update → Run workflow。
+- 使用 GitHub 內建 `GITHUB_TOKEN` 推送資料快照。
+- 使用 repo secret `CLOUDFLARE_API_TOKEN` 更新 DNS 與部署 Worker。
 
 ## GitHub Pages
 
-GitHub Pages 已關閉；實際發布為 `proxyip.leilaomi.cc.cd` 的 DNS-only A 記錄與 `list.leilaomi.cc.cd` 的 Cloudflare Worker。倉庫保留 `docs/` 作為可審核的部署數據快照.
+GitHub Pages 已關閉；實際發布為 `proxyip.leilaomi.cc.cd` 的 DNS-only A 記錄與 `list.leilaomi.cc.cd` 的 Cloudflare Worker。倉庫保留 `docs/` 作為可審核的部署數據快照。
