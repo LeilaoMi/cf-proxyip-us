@@ -34,6 +34,7 @@ CONFIG = {
     "max_latency": 3000,
     "target_countries": ["US"],
     "remote_sources": [
+        "https://zip.cm.edu.kg/all.txt",
         "https://addressesapi.090227.xyz/ip.txt",
         "https://addressesapi.090227.xyz/CloudFlareYes",
         "https://raw.githubusercontent.com/xiaoji235/airport-free/main/airport/cf_cdn_ip.txt",
@@ -82,10 +83,13 @@ def normalize_target(value: str) -> str | None:
     value = value.strip()
     if not value or value.startswith("#"):
         return None
+    value = value.split("#", 1)[0].strip()
     value = re.split(r"[\s,|]+", value, maxsplit=1)[0].strip()
     if "://" in value:
-        return None
-    if ":" in value and not is_valid_ip(value):
+        value = value.split("://", 1)[1].split("/", 1)[0]
+    if value.startswith("[") and "]" in value:
+        value = value[1:].split("]", 1)[0]
+    elif value.count(":") == 1 and re.search(r":[0-9]+$", value):
         value = value.rsplit(":", 1)[0]
     value = value.strip("[]")
     if is_valid_ip(value) or is_valid_domain(value):

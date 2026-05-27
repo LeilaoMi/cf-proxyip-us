@@ -1,1 +1,3 @@
-.github/workflows-local/
+__pycache__/
+.wrangler/
+*.log
