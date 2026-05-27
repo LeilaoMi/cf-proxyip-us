@@ -21,12 +21,12 @@ Cloudflare Worker + DNS-only ProxyIP 專案：`list.leilaomi.cc.cd` 分發資料
 - 過濾：只取 `#US`、只取 IPv4、只取 `:443`
 - cmliu 條件：`success=true` 且 `supports_ipv4=true`
 - 候選數：573
-- 通過 IPv4 檢測：207
-- cmliu 成功但不是 IPv4：353（已排除）
-- 低風險 Top 5：`43.170.25.96`, `128.14.196.39`, `129.159.84.71`, `166.1.160.140`, `162.243.115.22`
+- 通過 IPv4 檢測：210
+- cmliu 成功但不是 IPv4：352（已排除）
+- 低風險 Top 5：`128.14.196.39`, `162.243.115.21`, `8.221.126.227`, `43.170.25.96`, `150.136.105.229`
 - 排名規則：Cloudflare bot score 高、`corporateProxy=false`、`verifiedBot=false`、延遲低；Top 5 保持 ASN 分散
 - 檢測接口：`https://api.090227.xyz/check`
-- 最近生成時間：`2026-05-27T13:18:42.570382+00:00`
+- 最近生成時間：`2026-05-27T13:31:23.566470+00:00`
 - 線上驗證：2026-05-27 21:21（Asia/Shanghai）已確認 `list.leilaomi.cc.cd` 入口、token、bot block、workers.dev 關閉、`proxyip.leilaomi.cc.cd` DNS-only Top 5 A 記錄、Top 5 全部重新通過 cmliu IPv4 檢測。
 
 輸出文件在 `docs/`：
@@ -83,6 +83,26 @@ python3 build_dataset.py
 wrangler deploy
 ```
 
+## 自動巡檢與自癒
+
+已提供端到端腳本：
+
+```bash
+python3 scripts/auto_update.py
+```
+
+它會自動：
+
+1. 重新生成數據；
+2. 選出低風險且 ASN 分散的 Top 5；
+3. 把精簡數據內嵌到 Worker；
+4. 同步 `proxyip.leilaomi.cc.cd` 的 5 條 DNS-only A 記錄；
+5. 部署 Worker；
+6. 驗證 `list.leilaomi.cc.cd`、接口防護、DNS Top 5；
+7. 若數據有變化，自動 commit 並 push 到 GitHub。
+
+Zo 已建立每 3 小時巡檢任務；無變更且無錯誤時保持安靜，Top 5 變更或失敗時通知。
+
 ## GitHub Pages
 
-GitHub Pages 已關閉；實際發布為 `proxyip.leilaomi.cc.cd` 的 DNS-only A 記錄與 `list.leilaomi.cc.cd` 的 Cloudflare Worker。倉庫保留 `docs/` 作為可審核的部署數據快照。
+GitHub Pages 已關閉；實際發布為 `proxyip.leilaomi.cc.cd` 的 DNS-only A 記錄與 `list.leilaomi.cc.cd` 的 Cloudflare Worker。倉庫保留 `docs/` 作為可審核的部署數據快照.
