@@ -1,0 +1,72 @@
+{
+  "summary": {
+    "total": 38,
+    "valid": 4,
+    "invalid": 34,
+    "success_rate": "10.5%",
+    "avg_latency_ms": 32,
+    "country_distribution": {
+      "unknown": 4
+    },
+    "failure_reasons": {
+      "Cannot connect to host 172.65.1.1:443 ssl:False [Connect call failed ('172.65.1.1', 443)]": 1,
+      "Cannot connect to host 104.21.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.20.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.16.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.26.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 108.162.193.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 173.245.49.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.18.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.27.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 108.162.192.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 108.162.194.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.24.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.25.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 172.66.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "Cannot connect to host 104.19.0.1:443 ssl:False [[SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failure (_ssl.c:1000)]": 1,
+      "HTTPS_FAIL": 1,
+      "TCP_FAIL": 18
+    },
+    "checked_at": "2026-05-27T10:54:24.815267+00:00"
+  },
+  "valid_ips": [
+    {
+      "ip": "188.114.96.1",
+      "valid": true,
+      "latency": 31,
+      "country": "unknown",
+      "cf_ray": "a0247b2a8f09d6e0-IAD",
+      "status_code": 403
+    },
+    {
+      "ip": "104.17.0.1",
+      "valid": true,
+      "latency": 32,
+      "country": "unknown",
+      "cf_ray": "a0247b2a8ca9e5ec-IAD",
+      "status_code": 403
+    },
+    {
+      "ip": "188.114.97.1",
+      "valid": true,
+      "latency": 33,
+      "country": "unknown",
+      "cf_ray": "a0247b2a7b6ff26e-IAD",
+      "status_code": 403
+    },
+    {
+      "ip": "188.114.98.1",
+      "valid": true,
+      "latency": 34,
+      "country": "unknown",
+      "cf_ray": "a0247b2a88c12f89-IAD",
+      "status_code": 403
+    }
+  ],
+  "ip_list": [
+    "188.114.96.1",
+    "104.17.0.1",
+    "188.114.97.1",
+    "188.114.98.1"
+  ]
+}
