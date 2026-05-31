@@ -246,13 +246,13 @@ function renderHome(result, url) {
   const freshnessMin = checkedAt !== "unknown" ? Math.round((Date.now() - new Date(checkedAt).getTime()) / 60000) : null;
   const asnSet = new Set(valid.map(i => i.risk?.asn).filter(Boolean));
   const sourceCount = s.source_count || s.sources?.length || 1;
-  const avgLatency = valid.reduce((sum, v) => sum + (v.latency_ms ?? 0), 0) / valid.length || null;
+  const avgLatency = Math.round(valid.reduce((sum, v) => sum + (v.latency_ms ?? 0), 0) / valid.length || null);
   const rows = valid.slice(0, 30).map((item, i) =>
     `<tr><td>${i + 1}</td><td><code>${escapeHtml(item.ip)}</code></td><td>${escapeHtml(item.portRemote || 443)}</td><td>${escapeHtml(item.colo || "")}</td><td>${escapeHtml(item.latency_ms ?? "")}</td></tr>`
   ).join("");
 
   return `<!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -288,22 +288,22 @@ th{font-weight:600;background:#f9fafb}
 <p class="muted">只收錄 <code>zip.cm.edu.kg/all.txt</code> 中標記 <code>#US</code>、端口 <code>443</code>、且 cmliu 檢測 <code>supports_ipv4=true</code> 的結果。</p>
 
 <div class="status-row">
-  <span class="status-chip ok">✓ cmliu valid: <b>${escapeHtml(s.cmliu_ipv4_valid ?? valid.length)}</b></span>
-  <span class="status-chip info">candidates: <b>${escapeHtml(s.total_candidates ?? valid.length)}</b></span>
-  <span class="status-chip info">standby: <b>${standbyCount}</b></span>
-  <span class="status-chip info">ASNs: <b>${asnSet.size}</b></span>
-  <span class="status-chip info">sources: <b>${sourceCount}</b></span>
-  <span class="status-chip info">avg latency: <b>${escapeHtml(avgLatency ?? "N/A")}</b></span>
+  <span class="status-chip ok">✓ 通过验证: <b>${escapeHtml(s.cmliu_ipv4_valid ?? valid.length)}</b></span>
+  <span class="status-chip info">候选池: <b>${escapeHtml(s.total_candidates ?? valid.length)}</b></span>
+  <span class="status-chip info">备用数: <b>${standbyCount}</b></span>
+  <span class="status-chip info">ASN 分散: <b>${asnSet.size}</b></span>
+  <span class="status-chip info">数据源: <b>${sourceCount}</b></span>
+  <span class="status-chip info">平均延迟: <b>${avgLatency != null ? escapeHtml(avgLatency) : "N/A"}</b></span>
 </div>
-<p class="muted">Last checked: ${escapeHtml(checkedAt)}${freshnessMin !== null ? ` (${freshnessMin}m ago)` : ''}${freshnessMin !== null && freshnessMin > 240 ? ' ⚠️' : ''}</p>
+<p class="muted">上次更新: ${escapeHtml(checkedAt)}${freshnessMin !== null ? ` (${freshnessMin}m ago)` : ''}${freshnessMin !== null && freshnessMin > 240 ? ' ⚠️' : ''}</p>
 
-<h2>Current Stable ProxyIP</h2>
+<h2>当前稳定主 IP</h2>
 <div class="current-ip">${escapeHtml(current || "none")}</div>
 
-<h2>Top 5</h2>
+<h2>备用候选</h2>
 <p>${top5Ips.map((ip, i) => `<code>${escapeHtml(ip)}</code>`).join(" &nbsp; ")}</p>
 
-<h2>Endpoints</h2>
+<h2>接口列表</h2>
 <p class="muted">訪問首頁後 cookie 自動生效，點擊即可查看數據。程式化訪問請用 <a href="/token">/token</a> 取得 HMAC token。</p>
 <ul class="endpoint-list">
   <li><a href="/current.txt">current.txt</a></li>
@@ -323,16 +323,16 @@ th{font-weight:600;background:#f9fafb}
 
 <h2>API Token</h2>
 <button onclick="fetchToken()" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:14px">生成今日 HMAC Token</button>
-<div id="token-box"><button class="copy-btn" onclick="copyToken()">複製</button><span id="token-value"></span></div>
+<div id="token-box"><button class="copy-btn" onclick="copyToken()">复制</button><span id="token-value"></span></div>
 <p class="muted">程式化用法：<code>curl -A "Mozilla/5.0" "https://list.leilaomi.cc.cd/current.txt?t=TOKEN"</code></p>
 
-<h2>IP List (Top 30)</h2>
+<h2>IP 列表（前 30）</h2>
 <table>
 <thead><tr><th>#</th><th>IP</th><th>Port</th><th>Colo</th><th>Latency</th></tr></thead>
 <tbody>${rows}</tbody>
 </table>
 
-<p class="muted" style="margin-top:40px">Built on <a href="https://zocomputer.com" target="_blank">Zo Computer</a></p>
+<p class="muted" style="margin-top:40px">由 Zo Computer 驱动</p>
 
 <script>
 async function fetchToken() {
@@ -357,7 +357,7 @@ async function fetchToken() {
     btn.textContent = '✓ 已生成';
     setTimeout(() => btn.textContent = '生成今日 HMAC Token', 2000);
   } catch (e) { 
-    alert('生成失败: ' + e.message + '\n\n請先訪問首頁獲取 cookie');
+    alert('生成失败: ' + e.message + '\n\n请先访问首页获取 cookie');
     btn.textContent = '重試';
   } finally {
     btn.disabled = false;
@@ -370,7 +370,7 @@ function copyToken() {
   navigator.clipboard.writeText(t).then(() => {
     const btn = document.querySelector('.copy-btn');
     btn.textContent = '✓ Copied';
-    setTimeout(() => btn.textContent = '複製', 1500);
+    setTimeout(() => btn.textContent = '复制', 1500);
   }).catch(() => {
     // Fallback for older browsers
     const ta = document.createElement('textarea');
@@ -381,7 +381,7 @@ function copyToken() {
     document.body.removeChild(ta);
     const btn = document.querySelector('.copy-btn');
     btn.textContent = '✓ Copied';
-    setTimeout(() => btn.textContent = '複製', 1500);
+    setTimeout(() => btn.textContent = '复制', 1500);
   });
 }
 </script>
