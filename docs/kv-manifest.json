@@ -1,0 +1,8 @@
+{
+  "result_json": "docs/full.json",
+  "current_json": "docs/current.json",
+  "current_txt": "docs/current.txt",
+  "standby_txt": "docs/standby.txt",
+  "history_json": "docs/history.json",
+  "state_json": "docs/state.json"
+}

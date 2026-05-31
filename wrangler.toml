@@ -6,3 +6,7 @@ preview_urls = false
 
 [observability]
 enabled = true
+
+[[kv_namespaces]]
+binding = "PROXYIP_KV"
+id = "6d911271a65f4e67a39e22d991edb961"

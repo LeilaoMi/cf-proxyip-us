@@ -9,6 +9,7 @@ CURRENT_JSON = Path("docs/current.json")
 STATE_JSON = Path("docs/state.json")
 HISTORY_JSON = Path("docs/history.json")
 WORKER_JS = Path("worker.js")
+KV_MANIFEST = Path("docs/kv-manifest.json")
 
 
 def slim_item(item: dict) -> dict:
@@ -48,14 +49,24 @@ def main() -> None:
     content = WORKER_JS.read_text(encoding="utf-8")
     embedded = "const DEFAULT_RESULT = " + json.dumps(slim, ensure_ascii=False, separators=(",", ":")) + ";\n\nconst ACCESS_COOKIE"
     updated = re.sub(r"^const DEFAULT_RESULT = .*?;\n\nconst ACCESS_COOKIE", embedded, content, flags=re.S)
-    if updated == content:
-        raise SystemExit("worker.js DEFAULT_RESULT block was not updated")
-    WORKER_JS.write_text(updated, encoding="utf-8")
+    manifest = {
+        "result_json": "docs/full.json",
+        "current_json": "docs/current.json",
+        "current_txt": "docs/current.txt",
+        "standby_txt": "docs/standby.txt",
+        "history_json": "docs/history.json",
+        "state_json": "docs/state.json",
+    }
+    KV_MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if updated != content:
+        WORKER_JS.write_text(updated, encoding="utf-8")
     print(json.dumps({
         "embedded_current": (slim.get("current") or {}).get("ip"),
         "embedded_standby": [x["ip"] for x in slim["standby"][:5]],
         "embedded_valid": len(slim["valid_ips"]),
         "embedded_top5": [x["ip"] for x in slim["recommended_top5"]],
+        "worker_updated": updated != content,
+        "kv_manifest": str(KV_MANIFEST),
     }, ensure_ascii=False))
 
 

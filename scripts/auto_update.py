@@ -138,6 +138,7 @@ def main() -> None:
     after = current_primary()
     run([sys.executable, "scripts/embed_worker_data.py"])
     run([sys.executable, "scripts/sync_dns.py"])
+    run([sys.executable, "scripts/sync_kv.py"])
     run(["wrangler", "deploy"])
 
     # ✅ 修复: 部署完先等 1 分钟再开始校验，给 Cloudflare 同步的时间
