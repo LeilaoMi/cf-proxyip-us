@@ -6,31 +6,56 @@ Cloudflare Worker + DNS-only ProxyIP 專案：`list.leilaomi.cc.cd` 分發資料
 
 - ProxyIP 域名（DNS-only 單 A 記錄）：`proxyip.leilaomi.cc.cd`
 - Worker 入口頁：https://list.leilaomi.cc.cd/
-- 當前主 ProxyIP：https://list.leilaomi.cc.cd/current.txt?t=YYYYMMDD
-- 當前主 ProxyIP 詳情：https://list.leilaomi.cc.cd/current.json?t=YYYYMMDD
-- 備用候選：https://list.leilaomi.cc.cd/standby.txt?t=YYYYMMDD
-- 推薦 Top 5（當前 + 備用，不直接全量寫入 DNS）：https://list.leilaomi.cc.cd/top5.txt?t=YYYYMMDD
-- 全量列表：https://list.leilaomi.cc.cd/all.txt?t=YYYYMMDD
-- US 列表：https://list.leilaomi.cc.cd/us.txt?t=YYYYMMDD
-- Top 20：https://list.leilaomi.cc.cd/best.txt?t=YYYYMMDD
-- 完整報告：https://list.leilaomi.cc.cd/full.json?t=YYYYMMDD
-- V2Ray Base64：https://list.leilaomi.cc.cd/v2ray.txt?t=YYYYMMDD
+- 當前主 ProxyIP：https://list.leilaomi.cc.cd/current.txt
+- 當前主 ProxyIP 詳情：https://list.leilaomi.cc.cd/current.json
+- 備用候選：https://list.leilaomi.cc.cd/standby.txt
+- 推薦 Top 5（當前 + 備用，不直接全量寫入 DNS）：https://list.leilaomi.cc.cd/top5.txt
+- 全量列表：https://list.leilaomi.cc.cd/all.txt
+- US 列表：https://list.leilaomi.cc.cd/us.txt
+- Top 20：https://list.leilaomi.cc.cd/best.txt
+- 完整報告：https://list.leilaomi.cc.cd/full.json
+- V2Ray Base64：https://list.leilaomi.cc.cd/v2ray.txt
+- HMAC Token：https://list.leilaomi.cc.cd/token
+- 健康檢查：https://list.leilaomi.cc.cd/health
 
-`YYYYMMDD` 是當天 UTC 日期，例如 `20260527`。也可以先打開入口頁取得 cookie，再直接訪問接口。
+## 認證方式
+
+數據接口需要認證，支援兩種方式：
+
+### 1. Cookie 認證（瀏覽器）
+訪問首頁自動設置 `proxyip_access=ok` cookie，有效期 8 小時。
+
+### 2. HMAC Token 認證（程式化訪問）
+```bash
+# 1. 先訪問首頁獲取 cookie
+curl -c cookies.txt https://list.leilaomi.cc.cd/
+
+# 2. 用 cookie 訪問 /token 獲取 HMAC token
+curl -b cookies.txt https://list.leilaomi.cc.cd/token
+# 返回: {"token":"20260531-abc123...","date":"20260531","mode":"hmac"}
+
+# 3. 用 HMAC token 訪問數據接口
+curl "https://list.leilaomi.cc.cd/all.txt?t=20260531-abc123..."
+```
+
+Token 格式：`YYYYMMDD-HMAC-SHA256-Hex`，每天自動更新。
+
+### 3. ETag 緩存
+所有數據接口支援 ETag/304 緩存，客戶端可通過 `If-None-Match` 頭部減少頻寬消耗。
 
 ## 當前實際數據
 
-- 來源：`file https://zip.cm.edu.kg/all.txt`
+- 來源：`https://zip.cm.edu.kg/all.txt`
 - 過濾：只取 `#US`、只取 IPv4、只取 `:443`
 - cmliu 條件：`success=true` 且 `supports_ipv4=true`
-- 候選數：573
-- 通過 IPv4 檢測：210
+- 候選數：550
+- 通過 IPv4 檢測：191
 - cmliu 成功但不是 IPv4：352（已排除）
-- 低風險 Top 5：`128.14.196.39`, `162.243.115.21`, `8.221.126.227`, `43.170.25.96`, `150.136.105.229`
+- 低風險 Top 5：`43.170.25.96`, `216.180.125.171`, `159.60.146.81`, `156.154.245.83`, `198.23.224.230`
 - 排名規則：Cloudflare bot score 高、`corporateProxy=false`、`verifiedBot=false`、延遲低；Top 5 保持 ASN 分散
 - 檢測接口：`https://api.090227.xyz/check`
-- 最近生成時間：`2026-05-27T13:31:23.566470+00:00`
-- 線上驗證：2026-05-27 21:21（Asia/Shanghai）已確認 `list.leilaomi.cc.cd` 入口、token、bot block、workers.dev 關閉、`proxyip.leilaomi.cc.cd` DNS-only Top 5 A 記錄、Top 5 全部重新通過 cmliu IPv4 檢測。
+- 最近生成時間：`2026-05-31T19:43:25.799764+00:00`
+- 數據來源：KV 存儲（不再內嵌到 Worker）
 
 輸出文件在 `docs/`：
 
@@ -61,13 +86,14 @@ Cloudflare Worker + DNS-only ProxyIP 專案：`list.leilaomi.cc.cd` 分發資料
 
 Worker 做了基礎防護，目標是降低公開列表被爬取和被濫用的風險：
 
-- `file robots.txt` 禁止抓取；
+- `robots.txt` 禁止抓取；
 - 所有響應加 `X-Robots-Tag: noindex,nofollow,noarchive`；
 - 常見 bot / crawler / curl / wget / python-requests / 掃描器 UA 直接 403；
-- 文本與 JSON 接口需要：
-  - 先訪問首頁取得 cookie；或
-  - 帶當天 UTC token：`?t=YYYYMMDD`；
-- 接口使用 `private, max-age=300`，避免被公共緩存長期保存。
+- 文本與 JSON 接口需要認證（Cookie 或 HMAC Token）；
+- 接口使用 `private, max-age=300`，避免被公共緩存長期保存；
+- 支援 ETag/304 緩存，減少不必要的數據傳輸。
+
+安全性：HMAC-SHA256 簽名，密鑰存儲在 Cloudflare Worker Secrets 中。
 
 這不是強安全認證；如果要更嚴格，下一步應改為固定私密 token 或 Cloudflare Access。
 
@@ -103,22 +129,29 @@ python3 scripts/auto_update.py
 
 1. 重新生成數據；
 2. 檢測當前主 IP；仍有效則保持不變；連續失效後才從候選池 failover；
-3. 把精簡數據內嵌到 Worker；
+3. 同步數據到 KV 存儲；
 4. 同步 `proxyip.leilaomi.cc.cd` 的 1 條 DNS-only A 記錄；
 5. 部署 Worker；
-6. 驗證 `list.leilaomi.cc.cd`、接口防護、DNS Top 5；
+6. 驗證 `list.leilaomi.cc.cd`、接口防護、DNS、HMAC Token；
 7. 若數據有變化，自動 commit 並 push 到 GitHub。
 
-自動化不依賴 Zo Computer；已遷移到 GitHub Actions，每 3 小時在 GitHub 託管 runner 執行一次，避免 Zo 休眠導致漏跑。需要在 GitHub repo secrets 中保存 `CLOUDFLARE_API_TOKEN`。
+自動化不依賴 Zo Computer；已遷移到 GitHub Actions，每 3 小時在 GitHub 託管 runner 執行一次，避免 Zo 休眠導致漏跑。需要在 GitHub repo secrets 中保存 `CLOUDFLARE_API_TOKEN` 和 `PROXYIP_HMAC_SECRET`。
 
 ## GitHub Actions
 
-自動化入口：`file .github/workflows/proxyip-auto-update.yml`。
+自動化入口：`.github/workflows/proxyip-auto-update.yml`。
 
 - Cron：每 3 小時一次，`17 */3 * * *` UTC。
 - 可手動執行：GitHub repo → Actions → ProxyIP Auto Update → Run workflow。
 - 使用 GitHub 內建 `GITHUB_TOKEN` 推送資料快照。
 - 使用 repo secret `CLOUDFLARE_API_TOKEN` 更新 DNS 與部署 Worker。
+- 使用 repo secret `PROXYIP_HMAC_SECRET` 生成 HMAC Token。
+
+### 所需 Secrets
+| Secret | 用途 |
+|--------|------|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API 權限（DNS + Workers） |
+| `PROXYIP_HMAC_SECRET` | HMAC Token 簽名密鑰 |
 
 ## GitHub Pages
 
