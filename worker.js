@@ -11,12 +11,39 @@ const EMPTY_RESULT = {
 const ACCESS_COOKIE = "proxyip_access";
 const ACCESS_VALUE = "ok";
 const ACCESS_TTL = 60 * 60 * 8;
+
+// ── Rate limiter (per-isolate, best-effort) ──
+const RATE_WINDOW_MS = 60_000;  // 1 minute window
+const RATE_MAX_REQUESTS = 60;   // max requests per window per IP
+const rateBuckets = new Map();  // ip -> { count, windowStart }
+
+function checkRateLimit(request) {
+  const ip = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const now = Date.now();
+  let bucket = rateBuckets.get(ip);
+  if (!bucket || now - bucket.windowStart > RATE_WINDOW_MS) {
+    bucket = { count: 0, windowStart: now };
+    rateBuckets.set(ip, bucket);
+  }
+  bucket.count++;
+  if (bucket.count > RATE_MAX_REQUESTS) {
+    return { ok: false, ip, remaining: 0 };
+  }
+  return { ok: true, ip, remaining: RATE_MAX_REQUESTS - bucket.count };
+}
+
 const TEXT_PATHS = new Set(["/current.txt", "/standby.txt", "/all.txt", "/us.txt", "/best.txt", "/top5.txt", "/v2ray.txt"]);
 const JSON_PATHS = new Set(["/current.json", "/state.json", "/history.json", "/full.json"]);
 const BLOCKED_UA = /(bot|spider|crawler|scrapy|python-requests|aiohttp|curl|wget|go-http-client|httpx|masscan|zgrab|nuclei|semrush|ahrefs|bytespider|petalbot|yandex|bingbot|googlebot)/i;
 
 export default {
   async fetch(request, env) {
+    // Rate limit check
+    const rl = checkRateLimit(request);
+    if (!rl.ok) {
+      return new Response("Rate limit exceeded\n", { status: 429, headers: { "retry-after": "60", "content-type": "text/plain" } });
+    }
+
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") return withHeaders(new Response(null, { status: 204 }));
@@ -34,6 +61,28 @@ export default {
         count: valid.length,
         checked_at: result.summary?.checked_at || null,
         data_source: env.PROXYIP_KV ? "kv" : "empty_fallback",
+      }, true);
+    }
+
+    // /stats returns detailed statistics (unauthenticated)
+    if (url.pathname === "/stats") {
+      const result = await loadResult(env);
+      const valid = Array.isArray(result.valid_ips) ? result.valid_ips : [];
+      return json({
+        ok: true,
+        data: {
+          asn_distribution: valid.map(v => v.risk?.asn).filter(Boolean).reduce((acc, asn) => {
+            acc[asn] = (acc[asn] || 0) + 1;
+            return acc;
+          }, {}),
+          colo_distribution: valid.map(v => v.colo).filter(Boolean).reduce((acc, colo) => {
+            acc[colo] = (acc[colo] || 0) + 1;
+            return acc;
+          }, {}),
+          freshness: result.summary?.checked_at || null,
+          avg_latency: valid.reduce((sum, v) => sum + (v.latency_ms ?? 0), 0) / valid.length || null,
+          latency_distribution: valid.map(v => v.latency_ms ?? null).filter(v => v !== null),
+        },
       }, true);
     }
 
@@ -127,10 +176,26 @@ async function verifyAccess(request, url, env) {
   return "open the homepage first, or add ?t=YYYYMMDD token";
 }
 
+// ── HMAC key cache ──
+
+const hmacKeyCache = new Map();  // secret -> CryptoKey (per-isolate, no expiry needed since secret is stable)
+const hmacResultCache = new Map();  // "secret|message" -> { hex, expiresAt }
+const HMAC_CACHE_TTL_MS = 60_000;  // 60s cache for same day's HMAC
+
 async function hmacHex(secret, message) {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const cacheKey = `${secret}|${message}`;
+  const cached = hmacResultCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.hex;
+
+  let key = hmacKeyCache.get(secret);
+  if (!key) {
+    key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    hmacKeyCache.set(secret, key);
+  }
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  hmacResultCache.set(cacheKey, { hex, expiresAt: Date.now() + HMAC_CACHE_TTL_MS });
+  return hex;
 }
 
 // ── Helpers ──
@@ -161,6 +226,8 @@ function withHeaders(response, privateCache = false) {
   headers.set("x-robots-tag", "noindex, nofollow, noarchive");
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "no-referrer");
+  headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
+  headers.set("x-frame-options", "DENY");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 function escapeHtml(value) {
@@ -176,6 +243,10 @@ function renderHome(result, url) {
   const standbyCount = standby(result).length;
   const top5Ips = top5(result);
   const checkedAt = s.checked_at || "unknown";
+  const freshnessMin = checkedAt !== "unknown" ? Math.round((Date.now() - new Date(checkedAt).getTime()) / 60000) : null;
+  const asnSet = new Set(valid.map(i => i.risk?.asn).filter(Boolean));
+  const sourceCount = s.source_count || s.sources?.length || 1;
+  const avgLatency = valid.reduce((sum, v) => sum + (v.latency_ms ?? 0), 0) / valid.length || null;
   const rows = valid.slice(0, 30).map((item, i) =>
     `<tr><td>${i + 1}</td><td><code>${escapeHtml(item.ip)}</code></td><td>${escapeHtml(item.portRemote || 443)}</td><td>${escapeHtml(item.colo || "")}</td><td>${escapeHtml(item.latency_ms ?? "")}</td></tr>`
   ).join("");
@@ -220,8 +291,11 @@ th{font-weight:600;background:#f9fafb}
   <span class="status-chip ok">✓ cmliu valid: <b>${escapeHtml(s.cmliu_ipv4_valid ?? valid.length)}</b></span>
   <span class="status-chip info">candidates: <b>${escapeHtml(s.total_candidates ?? valid.length)}</b></span>
   <span class="status-chip info">standby: <b>${standbyCount}</b></span>
+  <span class="status-chip info">ASNs: <b>${asnSet.size}</b></span>
+  <span class="status-chip info">sources: <b>${sourceCount}</b></span>
+  <span class="status-chip info">avg latency: <b>${escapeHtml(avgLatency ?? "N/A")}</b></span>
 </div>
-<p class="muted">Last checked: ${escapeHtml(checkedAt)}</p>
+<p class="muted">Last checked: ${escapeHtml(checkedAt)}${freshnessMin !== null ? ` (${freshnessMin}m ago)` : ''}${freshnessMin !== null && freshnessMin > 240 ? ' ⚠️' : ''}</p>
 
 <h2>Current Stable ProxyIP</h2>
 <div class="current-ip">${escapeHtml(current || "none")}</div>
@@ -244,6 +318,7 @@ th{font-weight:600;background:#f9fafb}
   <li><a href="/full.json">full.json</a></li>
   <li><a href="/token">🔑 /token</a></li>
   <li><a href="/health">💚 /health</a></li>
+  <li><a href="/stats">📊 /stats</a></li>
 </ul>
 
 <h2>API Token</h2>

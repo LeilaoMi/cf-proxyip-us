@@ -277,6 +277,20 @@ def is_target_region(item: dict) -> bool:
     country = (risk.get("country") or "").upper()
     return not TARGET_COUNTRIES or country in TARGET_COUNTRIES
 
+MAX_PER_ASN = 10  # 同 ASN 最多保留 N 个 IP，防止过于集中
+
+def limit_asn_spread(items: list[dict], max_per_asn: int = MAX_PER_ASN) -> list[dict]:
+    """限制同 ASN 最多保留 max_per_n 个 IP，输入已按 rank_key 排序（最优在前）"""
+    asn_count: dict[str, int] = {}
+    out: list[dict] = []
+    for item in items:
+        asn = (item.get("risk") or {}).get("asn") or "unknown"
+        if asn_count.get(asn, 0) >= max_per_asn:
+            continue
+        asn_count[asn] = asn_count.get(asn, 0) + 1
+        out.append(item)
+    return out
+
 def preferred_colo_rank(item: dict) -> int:
     risk = item.get("risk") or {}
     colo = risk.get("colo") or item.get("colo") or ""
@@ -478,6 +492,7 @@ def main() -> None:
     pre_region_valid_count = len(valid)
     valid = [x for x in valid if is_target_region(x)]
     valid.sort(key=rank_key)
+    valid = limit_asn_spread(valid)
     current, state, history = select_current(valid, results)
     out = {
         "summary": {
