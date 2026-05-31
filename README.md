@@ -123,3 +123,13 @@ python3 scripts/auto_update.py
 ## GitHub Pages
 
 GitHub Pages 已關閉；實際發布為 `proxyip.leilaomi.cc.cd` 的 DNS-only A 記錄與 `list.leilaomi.cc.cd` 的 Cloudflare Worker。倉庫保留 `docs/` 作為可審核的部署數據快照。
+
+## 單一地區策略
+
+目前策略是穩定優先，且鎖定單一出口地區：
+
+- `PROXYIP_TARGET_COUNTRIES=US`：只保留檢測出口國家為 US 的 ProxyIP；
+- `PROXYIP_PREFERRED_COLOS=IAD`：同等風險下優先 IAD / Ashburn；
+- `proxyip.leilaomi.cc.cd` 永遠只同步 1 條 DNS-only A 記錄；
+- 當前 IP 健康且仍符合目標地區時不切換，避免 AI / CF CDN 站點看到出口亂跳；
+- 如需改成其他單一地區，調整 GitHub Actions/環境變量中的 `PROXYIP_TARGET_COUNTRIES` 和 `PROXYIP_PREFERRED_COLOS` 後重新跑 `scripts/auto_update.py`。

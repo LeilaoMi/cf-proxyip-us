@@ -21,6 +21,8 @@ MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
 TIMEOUT = int(os.environ.get("PROXYIP_CHECK_TIMEOUT", "35"))
 MAX_CANDIDATES = int(os.environ.get("PROXYIP_MAX_CANDIDATES", "1400"))
 FAILOVER_THRESHOLD = int(os.environ.get("PROXYIP_FAILOVER_THRESHOLD", "2"))
+TARGET_COUNTRIES = {x.strip().upper() for x in os.environ.get("PROXYIP_TARGET_COUNTRIES", "US").split(",") if x.strip()}
+PREFERRED_COLOS = [x.strip().upper() for x in os.environ.get("PROXYIP_PREFERRED_COLOS", "IAD").split(",") if x.strip()]
 BEST_COUNT = 20
 STANDBY_COUNT = 10
 
@@ -155,6 +157,20 @@ def enrich(item: dict, source_meta: dict | None = None) -> dict:
     return item
 
 
+
+def is_target_region(item: dict) -> bool:
+    risk = item.get("risk") or {}
+    country = (risk.get("country") or "").upper()
+    return not TARGET_COUNTRIES or country in TARGET_COUNTRIES
+
+def preferred_colo_rank(item: dict) -> int:
+    risk = item.get("risk") or {}
+    colo = risk.get("colo") or item.get("colo") or ""
+    try:
+        return PREFERRED_COLOS.index(colo)
+    except ValueError:
+        return len(PREFERRED_COLOS)
+
 def stable_score(item: dict) -> int:
     risk = item.get("risk") or {}
     score = risk.get("cf_bot_score") or 0
@@ -168,6 +184,7 @@ def rank_key(item: dict) -> tuple:
     return (
         risk.get("penalty", 999999999),
         -(risk.get("cf_bot_score") or 0),
+        preferred_colo_rank(item),
         -int(item.get("source_count") or 0),
         item.get("latency_ms", 999999),
         item.get("ip", ""),
@@ -344,16 +361,21 @@ def main() -> None:
             if done % 25 == 0 or done == len(candidates):
                 print(f"checked {done}/{len(candidates)} ipv4_valid={len(valid)}")
 
+    pre_region_valid_count = len(valid)
+    valid = [x for x in valid if is_target_region(x)]
     valid.sort(key=rank_key)
     current, state, history = select_current(valid, results)
     out = {
         "summary": {
             "source_count": len(SOURCES),
             "sources": source_stats,
-            "candidate_filter": "IPv4 only, US/443 for default source, manual allowlist supported, denylist supported",
-            "selection_policy": "single stable current IP; keep while healthy; fail over only after consecutive validation failures",
-            "ranking": "lowest risk first: Cloudflare bot score, no corporateProxy, no verifiedBot, source count, lower latency",
+            "candidate_filter": "IPv4 only, US/443 for default source, manual allowlist supported, denylist supported, target exit region enforced",
+            "target_countries": sorted(TARGET_COUNTRIES),
+            "preferred_colos": PREFERRED_COLOS,
+            "selection_policy": "single stable current IP; keep while healthy and still in target region; fail over only after consecutive validation failures",
+            "ranking": "lowest risk first: Cloudflare bot score, preferred colo, no corporateProxy, no verifiedBot, source count, lower latency",
             "total_candidates": len(candidates),
+            "cmliu_ipv4_valid_before_region_filter": pre_region_valid_count,
             "cmliu_ipv4_valid": len(valid),
             "cmliu_success_not_ipv4": success_not_ipv4,
             "current_ip": current["ip"],

@@ -149,6 +149,8 @@ def main() -> None:
 
     changed = before != after or git_dirty()
     if changed:
+        run(["git", "config", "user.name", "github-actions[bot]"])
+        run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
         run(["git", "add", "."])
         message = "Auto switch stable ProxyIP" if before != after else "Auto refresh ProxyIP data"
         run(["git", "commit", "-m", message], check=False)
