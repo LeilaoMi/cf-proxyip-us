@@ -14,6 +14,10 @@ from urllib.request import Request, urlopen
 
 SOURCES = [
     {"name": "zip.cm.edu.kg/all.txt", "url": "https://zip.cm.edu.kg/all.txt", "countries": {"US"}, "ports": {443}},
+    {"name": "addressesapi.090227", "url": "https://addressesapi.090227.xyz/ip.txt", "countries": None, "ports": {443}},
+    {"name": "090227-CloudFlareYes", "url": "https://addressesapi.090227.xyz/CloudFlareYes", "countries": None, "ports": {443}},
+    {"name": "xiaoji-cf_cdn_ip", "url": "https://raw.githubusercontent.com/xiaoji235/airport-free/main/airport/cf_cdn_ip.txt", "countries": None, "ports": {443}},
+    {"name": "Alvin9999-cloudflare", "url": "https://raw.githubusercontent.com/Alvin9999/new-pac/master/cloudflare-ip.txt", "countries": None, "ports": {443}},
 ]
 CHECK_API = "https://api.090227.xyz/check"
 USER_AGENT = "cf-proxyip-stable-builder/2.0"
@@ -39,10 +43,18 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def fetch_text(url: str) -> str:
-    req = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(req, timeout=45) as res:
-        return res.read().decode("utf-8", "ignore")
+def fetch_text(url: str, retries: int = 3) -> str:
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = Request(url, headers={"User-Agent": USER_AGENT})
+            with urlopen(req, timeout=45) as res:
+                return res.read().decode("utf-8", "ignore")
+        except Exception as exc:
+            last_err = exc
+            if attempt < retries - 1:
+                time.sleep(2 * (attempt + 1))
+    raise last_err
 
 
 def valid_ipv4(ip: str) -> bool:
@@ -96,6 +108,19 @@ def collect_candidates() -> tuple[list[dict], list[dict]]:
             item = by_ip.setdefault(row["ip"], {"ip": row["ip"], "port": row.get("port", 443), "country_hint": row.get("country_hint"), "sources": []})
             item["sources"] = sorted(set(item["sources"]) | set(row.get("sources") or []))
 
+    # 加载备用数据源
+    for src in FALLBACK_SOURCES:
+        try:
+            text = fetch_text(src["url"])
+            rows = parse_candidates(text, src["name"], src.get("countries"), src.get("ports"))
+            source_stats.append({"name": src["name"], "url": src["url"], "count": len(rows), "error": None})
+        except Exception as exc:
+            rows = []
+            source_stats.append({"name": src["name"], "url": src["url"], "count": 0, "error": str(exc)})
+        for row in rows:
+            item = by_ip.setdefault(row["ip"], {"ip": row["ip"], "port": row.get("port", 443), "country_hint": row.get("country_hint"), "sources": []})
+            item["sources"] = sorted(set(item["sources"]) | set(row.get("sources") or []))
+
     for row in read_ip_file(MANUAL_ALLOWLIST, "manual_allowlist"):
         item = by_ip.setdefault(row["ip"], {"ip": row["ip"], "port": row.get("port", 443), "country_hint": row.get("country_hint"), "sources": []})
         item["sources"] = sorted(set(item["sources"]) | {"manual_allowlist"})
@@ -111,18 +136,107 @@ def collect_candidates() -> tuple[list[dict], list[dict]]:
     return candidates[:MAX_CANDIDATES], source_stats
 
 
-def check_cmliu(ip: str) -> dict:
+def check_cmliu(ip: str, retries: int = 2) -> dict:
     url = f"{CHECK_API}?proxyip={ip}"
+    last_err = None
+    for attempt in range(retries):
+        start = time.monotonic()
+        try:
+            req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+            with urlopen(req, timeout=TIMEOUT) as res:
+                data = json.loads(res.read().decode("utf-8", "ignore"))
+            data["latency_ms"] = int((time.monotonic() - start) * 1000)
+            data["ip"] = ip
+            return data
+        except Exception as exc:
+            last_err = exc
+            if attempt < retries - 1:
+                time.sleep(1)
+    return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000}
+
+
+def check_https_direct(ip: str, timeout: int = 8) -> dict:
+    """直接 HTTPS 测试 ProxyIP，作为 cmliu API 的备用验证方式"""
+    import ssl
+    import socket
+    
     start = time.monotonic()
     try:
-        req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-        with urlopen(req, timeout=TIMEOUT) as res:
-            data = json.loads(res.read().decode("utf-8", "ignore"))
-        data["latency_ms"] = int((time.monotonic() - start) * 1000)
-        data["ip"] = ip
-        return data
+        # 测试 1: TCP 连接
+        sock = socket.create_connection((ip, 443), timeout=min(timeout, 3))
+        sock.close()
+        tcp_time = int((time.monotonic() - start) * 1000)
+        
+        # 测试 2: HTTPS 请求到 Cloudflare 端点
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        test_url = f"https://{ip}/cdn-cgi/trace"
+        headers = f"Host: speed.cloudflare.com\r\nUser-Agent: curl/8.0.0\r\nAccept: */*\r\n\r\n"
+        
+        req_start = time.monotonic()
+        sock = socket.create_connection((ip, 443), timeout=timeout)
+        ssock = ctx.wrap_socket(sock, server_hostname="speed.cloudflare.com")
+        ssock.sendall(f"GET /cdn-cgi/trace HTTP/1.1\r\n{headers}".encode())
+        
+        response = b""
+        while True:
+            chunk = ssock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+            if b"\r\n\r\n" in response:
+                break
+        ssock.close()
+        
+        latency = int((time.monotonic() - start) * 1000)
+        resp_text = response.decode("utf-8", errors="ignore")
+        
+        # 检查响应是否包含 Cloudflare 特征
+        is_cf = "cf-ray" in resp_text.lower() or "cloudflare" in resp_text.lower()
+        is_200 = "HTTP/1.1 200" in resp_text or "HTTP/2 200" in resp_text
+        
+        # 提取国家信息
+        country = None
+        for line in resp_text.split("\n"):
+            if line.startswith("loc="):
+                country = line.split("=")[1].strip()
+                break
+        
+        if is_cf and is_200:
+            return {
+                "ip": ip,
+                "success": True,
+                "supports_ipv4": True,
+                "latency_ms": latency,
+                "country": country or "US",
+                "colo": None,
+                "cf_bot_score": 95,  # 默认分数
+                "method": "direct_https",
+            }
+        else:
+            return {"ip": ip, "success": False, "error": "not_cloudflare", "latency_ms": latency}
+            
     except Exception as exc:
-        return {"ip": ip, "success": False, "error": str(exc), "latency_ms": int((time.monotonic() - start) * 1000)}
+        return {"ip": ip, "success": False, "error": str(exc)[:100], "latency_ms": int((time.monotonic() - start) * 1000)}
+
+
+def check_with_fallback(ip: str) -> dict:
+    """先用 cmliu API，失败则用直接 HTTPS 测试"""
+    result = check_cmliu(ip)
+    
+    # 如果 cmliu API 成功，直接返回
+    if result.get("success") is True and result.get("supports_ipv4") is True:
+        return result
+    
+    # 如果 cmliu API 失败或超时，尝试直接 HTTPS 测试
+    if result.get("success") is False and ("timeout" in str(result.get("error", "")).lower() or "urlopen" in str(result.get("error", "")).lower()):
+        direct_result = check_https_direct(ip)
+        if direct_result.get("success"):
+            return direct_result
+    
+    return result
 
 
 def exit_info(item: dict) -> dict:
@@ -348,7 +462,7 @@ def main() -> None:
     valid = []
     success_not_ipv4 = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {pool.submit(check_cmliu, row["ip"]): row["ip"] for row in candidates}
+        futures = {pool.submit(check_with_fallback, row["ip"]): row["ip"] for row in candidates}
         done = 0
         for fut in concurrent.futures.as_completed(futures):
             item = fut.result()

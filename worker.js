@@ -261,17 +261,49 @@ th{font-weight:600;background:#f9fafb}
 
 <script>
 async function fetchToken() {
+  const btn = document.querySelector('button');
+  const box = document.getElementById('token-box');
+  const val = document.getElementById('token-value');
+  
+  btn.disabled = true;
+  btn.textContent = '生成中...';
+  box.style.display = 'none';
+  
   try {
     const r = await fetch('/token');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(text || 'HTTP ' + r.status);
+    }
     const d = await r.json();
-    document.getElementById('token-value').textContent = d.token;
-    document.getElementById('token-box').style.display = 'block';
-  } catch (e) { alert('Failed: ' + e.message); }
+    if (!d.token) throw new Error('No token in response');
+    val.textContent = d.token;
+    box.style.display = 'block';
+    btn.textContent = '✓ 已生成';
+    setTimeout(() => btn.textContent = '生成今日 HMAC Token', 2000);
+  } catch (e) { 
+    alert('生成失败: ' + e.message + '\n\n請先訪問首頁獲取 cookie');
+    btn.textContent = '重試';
+  } finally {
+    btn.disabled = false;
+  }
 }
+
 function copyToken() {
   const t = document.getElementById('token-value').textContent;
+  if (!t) return;
   navigator.clipboard.writeText(t).then(() => {
+    const btn = document.querySelector('.copy-btn');
+    btn.textContent = '✓ Copied';
+    setTimeout(() => btn.textContent = '複製', 1500);
+  }).catch(() => {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
     const btn = document.querySelector('.copy-btn');
     btn.textContent = '✓ Copied';
     setTimeout(() => btn.textContent = '複製', 1500);
