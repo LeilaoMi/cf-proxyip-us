@@ -1,15 +1,15 @@
 {
   "current": {
     "ip": "43.170.25.96",
-    "latency_ms": 92,
+    "latency_ms": 171,
     "portRemote": 443,
-    "colo": "IAD",
+    "colo": "ORD",
     "sources": [
       "current_dns",
       "zip.cm.edu.kg/all.txt"
     ],
     "source_count": 2,
-    "stable_score": 99008,
+    "stable_score": 98929,
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
       "cf_bot_score": 99,
@@ -17,7 +17,7 @@
       "corporate_proxy": false,
       "verified_bot": false,
       "asn": 139341,
-      "as_organization": "ACE",
+      "as_organization": "16 COLLYER QUAY # 18-29 INCOME AT RAFFLES",
       "country": "US",
       "city": "Ashburn"
     }
@@ -27,8 +27,8 @@
     "status": "healthy",
     "failure_count": 0,
     "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-    "last_success_at": "2026-06-01T12:13:01.275093+00:00",
-    "last_checked_at": "2026-06-01T12:13:01.275093+00:00",
+    "last_success_at": "2026-06-01T18:19:00.707713+00:00",
+    "last_checked_at": "2026-06-01T18:19:00.707713+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": null
