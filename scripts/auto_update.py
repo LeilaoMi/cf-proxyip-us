@@ -78,24 +78,19 @@ def verify_live() -> None:
 
     token = hmac_token()
     expected = [primary]
-<<<<<<< HEAD
-    # Wait up to 20 attempts × 10s for current.txt to match
-    for attempt in range(1, 21):
-=======
     # Wait up to 15 attempts × 15s for current.txt to match
     for attempt in range(1, 16):
->>>>>>> 1c81d83 (fix: use HMAC token in auto_update.py verify_live())
         status, body = fetch(f"{LIST_DOMAIN}/current.txt?t={token}&r={int(time.time())}")
         if status == 200:
             live = [x.strip() for x in body.splitlines() if x.strip()]
             if live == expected:
                 print(f"✅ Live current.txt matches: {live}", flush=True)
                 break
-            print(f"  attempt {attempt}/20: got {live}, want {expected}", flush=True)
+            print(f"  attempt {attempt}/15: got {live}, want {expected}", flush=True)
         else:
-            print(f"  attempt {attempt}/20: HTTP {status}", flush=True)
-        if attempt < 20:
-            time.sleep(10)
+            print(f"  attempt {attempt}/15: HTTP {status}", flush=True)
+        if attempt < 15:
+            time.sleep(15)
     else:
         print("⚠️  Live current.txt verification timed out, DNS will sync in background", flush=True)
 
