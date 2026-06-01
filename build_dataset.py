@@ -8,6 +8,7 @@ import json
 import os
 import re
 import time
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -426,7 +427,7 @@ def write_outputs(out: dict, current: dict, state: dict, history: list[dict]) ->
     top5 = [x["ip"] for x in ([current] + standby)[:5] if x.get("ip")]
 
     (DOCS / "all.txt").write_text("\n".join(ips) + ("\n" if ips else ""), encoding="utf-8")
-    (DOCS / "us.txt").write_text("\n".join(ips) + ("\n" if ips else ""), encoding="utf-8")
+    shutil.copy(DOCS / "all.txt", DOCS / "us.txt")
     (DOCS / "best.txt").write_text("\n".join(ips[:BEST_COUNT]) + ("\n" if ips else ""), encoding="utf-8")
     (DOCS / "standby.txt").write_text("\n".join(x["ip"] for x in standby) + ("\n" if standby else ""), encoding="utf-8")
     (DOCS / "top5.txt").write_text("\n".join(top5) + ("\n" if top5 else ""), encoding="utf-8")
