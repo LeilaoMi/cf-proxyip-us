@@ -3,8 +3,8 @@
   "status": "healthy",
   "failure_count": 0,
   "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-  "last_success_at": "2026-06-01T18:19:00.707713+00:00",
-  "last_checked_at": "2026-06-01T18:19:00.707713+00:00",
+  "last_success_at": "2026-06-01T23:12:41.061307+00:00",
+  "last_checked_at": "2026-06-01T23:12:41.061307+00:00",
   "last_error": null,
   "failover_threshold": 2,
   "previous_ip": null
