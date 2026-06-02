@@ -646,7 +646,7 @@ def main() -> None:
     current, state, history = select_current(valid, results)
     out = {
         "summary": {
-            "source_count": len(SOURCES),
+            "source_count": len(source_stats),
             "sources": source_stats,
             "candidate_filter": "third-party ProxyIP only; Cloudflare official IP ranges excluded; IPv4 only; text/domain sources, manual allowlist and denylist supported; target exit region enforced",
             "target_countries": sorted(TARGET_COUNTRIES),
