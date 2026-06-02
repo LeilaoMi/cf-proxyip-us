@@ -9,16 +9,16 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1270,
+      "penalty": 1260,
       "grade": "low",
       "asn": 139341,
       "as_organization": "ACE",
-      "exit_ip": "43.152.134.101",
+      "exit_ip": "43.152.135.77",
       "country": "US",
       "city": "Ashburn",
       "colo": "DFW"
     },
-    "latency_ms": 270,
+    "latency_ms": 260,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
