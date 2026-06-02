@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1077,
+      "penalty": 1098,
       "grade": "low",
       "asn": 139341,
       "as_organization": "16 COLLYER QUAY # 18-29 INCOME AT RAFFLES",
@@ -18,7 +18,7 @@
       "city": "Ashburn",
       "colo": "IAD"
     },
-    "latency_ms": 77,
+    "latency_ms": 98,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
