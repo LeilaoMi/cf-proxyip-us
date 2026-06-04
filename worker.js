@@ -15,7 +15,20 @@ const STALE_WARN_MS = 6 * 60 * 60 * 1000;
 const STALE_FAIL_MS = 12 * 60 * 60 * 1000;
 const RATE_CLEANUP_EVERY = 100;
 const RATE_MAX_BUCKETS = 5000;
+const RESULT_CACHE_TTL_MS = 60_000;
+const TEXT_KEY_BY_PATH = {
+  "/current.txt": "current_txt",
+  "/standby.txt": "standby_txt",
+  "/all.txt": "all_txt",
+  "/us.txt": "us_txt",
+  "/best.txt": "best_txt",
+  "/top5.txt": "top5_txt",
+  "/v2ray.txt": "v2ray_txt",
+  "/base64.txt": "base64_txt",
+};
 let rateRequestCount = 0;
+let cachedResult = null;
+let cachedResultAt = 0;
 
 // ── Rate limiter (per-isolate, best-effort) ──
 const RATE_WINDOW_MS = 60_000;  // 1 minute window
@@ -85,7 +98,7 @@ export default {
         count: valid.length,
         checked_at: result.summary?.checked_at || null,
         data_source: env.PROXYIP_KV ? "kv" : "empty_fallback",
-      }, true));
+      }, true, true));
     }
 
     if (url.pathname === "/health/full") {
@@ -138,9 +151,10 @@ export default {
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
       if (secret) {
         const hex = await hmacHex(secret, today);
-        return reply(json({ token: `${today}-${hex}`, date: today, mode: "hmac" }, false));
+        return reply(noStoreJson({ token: `${today}-${hex}`, date: today, mode: "hmac" }));
       }
-      return reply(json({ token: today, date: today, mode: "legacy" }, false));
+      if (env.ALLOW_LEGACY_DATE_TOKEN === "1") return reply(noStoreJson({ token: today, date: today, mode: "legacy" }));
+      return reply(withHeaders(new Response("PROXYIP_SECRET is not configured\n", { status: 503, headers: { "content-type": "text/plain; charset=utf-8" } }), true));
     }
 
     // Auth gate for data endpoints
@@ -149,35 +163,35 @@ export default {
       if (authErr) return reply(deny(authErr));
     }
 
+    const lightweightText = await loadTextKey(env, url.pathname);
+    if (lightweightText !== null) {
+      const cacheSeconds = url.pathname === "/current.txt" ? 60 : 300;
+      return reply(withEtag(text(lightweightText, true, false, cacheSeconds), etagForText(url.pathname, lightweightText)));
+    }
+
     const result = await loadResult(env);
     const valid = Array.isArray(result.valid_ips) ? result.valid_ips : [];
     const ips = valid.map((item) => item.ip).filter(Boolean);
-    const etag = `"${result.summary?.checked_at || "0"}"`;
+    const etag = resultEtag(result);
 
     // 304 Not Modified
     if (request.headers.get("if-none-match") === etag) {
       return reply(withHeaders(new Response(null, { status: 304, headers: { etag } }), true));
     }
 
-    const withEtag = (resp) => {
-      const h = new Headers(resp.headers);
-      h.set("etag", etag);
-      return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: h });
-    };
-
-    if (url.pathname === "/current.txt") return reply(withEtag(text(lines(currentIp(result) ? [currentIp(result)] : []), true)));
-    if (url.pathname === "/standby.txt") return reply(withEtag(text(lines(standby(result).map((item) => item.ip).filter(Boolean)), true)));
-    if (url.pathname === "/all.txt" || url.pathname === "/us.txt") return reply(withEtag(text(lines(ips), true)));
+    if (url.pathname === "/current.txt") return reply(withEtag(text(lines(currentIp(result) ? [currentIp(result)] : []), true, false, 60), etag));
+    if (url.pathname === "/standby.txt") return reply(withEtag(text(lines(standby(result).map((item) => item.ip).filter(Boolean)), true), etag));
+    if (url.pathname === "/all.txt" || url.pathname === "/us.txt") return reply(withEtag(text(lines(ips), true), etag));
     if (url.pathname === "/best.txt") {
       const n = Math.min(Math.max(Number.parseInt(url.searchParams.get("n") || "20", 10) || 20, 1), 100);
-      return reply(withEtag(text(lines(ips.slice(0, n)), true)));
+      return reply(withEtag(text(lines(ips.slice(0, n)), true), etag));
     }
-    if (url.pathname === "/top5.txt") return reply(withEtag(text(lines(top5(result)), true)));
-    if (url.pathname === "/v2ray.txt" || url.pathname === "/base64.txt") return reply(withEtag(text(btoa(ips.join("\n")), true)));
-    if (url.pathname === "/current.json") return reply(withEtag(json({ current: result.current || null, state: result.state || null }, true)));
-    if (url.pathname === "/state.json") return reply(withEtag(json(result.state || {}, true)));
-    if (url.pathname === "/history.json") return reply(withEtag(json(result.history || [], true)));
-    if (url.pathname === "/full.json") return reply(withEtag(json(result, true)));
+    if (url.pathname === "/top5.txt") return reply(withEtag(text(lines(top5(result)), true), etag));
+    if (url.pathname === "/v2ray.txt" || url.pathname === "/base64.txt") return reply(withEtag(text(btoa(ips.join("\n")), true), etag));
+    if (url.pathname === "/current.json") return reply(withEtag(json({ current: result.current || null, state: result.state || null }, true), etag));
+    if (url.pathname === "/state.json") return reply(withEtag(json(result.state || {}, true), etag));
+    if (url.pathname === "/history.json") return reply(withEtag(json(result.history || [], true), etag));
+    if (url.pathname === "/full.json") return reply(withEtag(json(result, true), etag));
 
     return reply(html(renderHome(result, url)));
   }
@@ -186,38 +200,56 @@ export default {
 // ── Data loading (KV only) ──
 
 async function loadResult(env) {
+  const now = Date.now();
+  if (cachedResult && now - cachedResultAt < RESULT_CACHE_TTL_MS) return cachedResult;
   if (env.PROXYIP_KV) {
     const stored = await env.PROXYIP_KV.get("result_json", "json");
-    if (stored) return stored;
+    if (stored) {
+      cachedResult = stored;
+      cachedResultAt = now;
+      return stored;
+    }
   }
   return EMPTY_RESULT;
+}
+
+async function loadTextKey(env, pathname) {
+  if (!env.PROXYIP_KV) return null;
+  const key = TEXT_KEY_BY_PATH[pathname];
+  if (!key) return null;
+  const value = await env.PROXYIP_KV.get(key, "text");
+  return typeof value === "string" ? value : null;
 }
 
 // ── Access control ──
 
 async function verifyAccess(request, url, env) {
+  const token = bearerToken(request) || url.searchParams.get("t") || "";
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const secret = env.PROXYIP_SECRET || "";
+
+  if (secret) {
+    if (token.startsWith(today + "-")) {
+      const expected = await hmacHex(secret, today);
+      if (token.slice(today.length + 1) === expected) return null;
+    }
+  } else if (env.ALLOW_LEGACY_DATE_TOKEN === "1" && token === today) {
+    return null;
+  }
+
   const ua = request.headers.get("user-agent") || "";
   if (BLOCKED_UA.test(ua)) return "blocked user-agent";
 
   // Cookie from homepage visit
   if ((request.headers.get("cookie") || "").includes(`${ACCESS_COOKIE}=${ACCESS_VALUE}`)) return null;
 
-  const token = url.searchParams.get("t") || "";
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const secret = env.PROXYIP_SECRET || "";
+  if (!secret) return "server token secret is not configured";
+  return "invalid or missing token";
+}
 
-  // HMAC token mode: ?t=YYYYMMDD-hex
-  if (secret) {
-    if (!token.startsWith(today + "-")) return "invalid or missing token";
-    const expected = await hmacHex(secret, today);
-    if (token.slice(today.length + 1) === expected) return null;
-    return "invalid token";
-  }
-
-  // Legacy mode (no secret): accept plain ?t=YYYYMMDD
-  if (token === today) return null;
-
-  return "open the homepage first, or add ?t=YYYYMMDD token";
+function bearerToken(request) {
+  const auth = request.headers.get("authorization") || "";
+  return auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
 }
 
 // ── HMAC key cache ──
@@ -248,6 +280,22 @@ function currentIp(result) { return result.current?.ip || result.state?.current_
 function standby(result) { return Array.isArray(result.standby) ? result.standby : []; }
 function top5(result) { return (Array.isArray(result.recommended_top5) ? result.recommended_top5 : []).map((i) => i.ip).filter(Boolean); }
 function lines(items) { return items.join("\n") + (items.length ? "\n" : ""); }
+function resultEtag(result) {
+  return `"${result.summary?.checked_at || "0"}:${currentIp(result) || "none"}:${Array.isArray(result.valid_ips) ? result.valid_ips.length : 0}"`;
+}
+function etagForText(pathname, body) {
+  return `"${pathname}:${body.length}:${hashString(body)}"`;
+}
+function hashString(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+  return Math.abs(hash).toString(36);
+}
+function withEtag(resp, etag) {
+  const h = new Headers(resp.headers);
+  h.set("etag", etag);
+  return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers: h });
+}
 function freshnessStatus(checkedAt) {
   if (!checkedAt) return { ok: false, stale: true, ageMinutes: null };
   const ts = new Date(checkedAt).getTime();
@@ -263,21 +311,27 @@ function freshnessStatus(checkedAt) {
 // ── Response builders ──
 
 function deny(reason) {
-  return withHeaders(new Response(reason + "\n", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } }), false);
+  console.log(`Access denied: ${reason}`);
+  return withHeaders(new Response("Forbidden\n", { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } }), false);
 }
-function text(body, privateCache) {
-  return withHeaders(new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } }), privateCache);
+function text(body, privateCache, allowCors = false, maxAge = 300) {
+  return withHeaders(new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } }), privateCache, allowCors, maxAge);
 }
-function json(data, privateCache) {
-  return withHeaders(new Response(JSON.stringify(data, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } }), privateCache);
+function json(data, privateCache, allowCors = false, maxAge = 300) {
+  return withHeaders(new Response(JSON.stringify(data, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } }), privateCache, allowCors, maxAge);
+}
+function noStoreJson(data) {
+  const response = withHeaders(new Response(JSON.stringify(data, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } }), true);
+  response.headers.set("cache-control", "private, no-store");
+  return response;
 }
 function html(body) {
   return withHeaders(new Response(body, { headers: { "content-type": "text/html; charset=utf-8", "set-cookie": `${ACCESS_COOKIE}=${ACCESS_VALUE}; Max-Age=${ACCESS_TTL}; Path=/; Secure; HttpOnly; SameSite=Lax` } }), false);
 }
-function withHeaders(response, privateCache = false) {
+function withHeaders(response, privateCache = false, allowCors = false, maxAge = 300) {
   const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", "*");
-  headers.set("cache-control", privateCache ? "private, max-age=300" : "public, max-age=300");
+  if (allowCors) headers.set("access-control-allow-origin", "*");
+  headers.set("cache-control", `${privateCache ? "private" : "public"}, max-age=${maxAge}`);
   headers.set("x-robots-tag", "noindex, nofollow, noarchive");
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "no-referrer");
@@ -342,7 +396,7 @@ th{font-weight:600;background:#f9fafb}
 </head>
 <body>
 <h1>ProxyIP US IPv4</h1>
-<p class="muted">只收錄 <code>zip.cm.edu.kg/all.txt</code> 中標記 <code>#US</code>、端口 <code>443</code>、且 cmliu 檢測 <code>supports_ipv4=true</code> 的結果。</p>
+<p class="muted">只收录 <code>zip.cm.edu.kg/all.txt</code> 中标记 <code>#US</code>、端口 <code>443</code>、且 cmliu 检测 <code>supports_ipv4=true</code> 的结果。</p>
 
 <div class="status-row">
   <span class="status-chip ok">✓ 通过验证: <b>${escapeHtml(s.cmliu_ipv4_valid ?? valid.length)}</b></span>
@@ -361,7 +415,7 @@ th{font-weight:600;background:#f9fafb}
 <p>${top5Ips.map((ip, i) => `<code>${escapeHtml(ip)}</code>`).join(" &nbsp; ")}</p>
 
 <h2>接口列表</h2>
-<p class="muted">訪問首頁後 cookie 自動生效，點擊即可查看數據。程式化訪問請用 <a href="/token">/token</a> 取得 HMAC token。</p>
+<p class="muted">访问首页后 cookie 自动生效，点击即可查看数据。程序化访问请用 <a href="/token">/token</a> 获取 HMAC token。</p>
 <ul class="endpoint-list">
   <li><a href="/current.txt">current.txt</a></li>
   <li><a href="/current.json">current.json</a></li>
@@ -381,7 +435,7 @@ th{font-weight:600;background:#f9fafb}
 <h2>API Token</h2>
 <button onclick="fetchToken()" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:10px 20px;cursor:pointer;font-size:14px">生成今日 HMAC Token</button>
 <div id="token-box"><button class="copy-btn" onclick="copyToken()">复制</button><span id="token-value"></span></div>
-<p class="muted">程式化用法：<code>curl -A "Mozilla/5.0" "https://list.leilaomi.cc.cd/current.txt?t=TOKEN"</code></p>
+<p class="muted">程序化用法：<code>curl -A "Mozilla/5.0" -H "Authorization: Bearer TOKEN" "https://list.leilaomi.cc.cd/current.txt"</code></p>
 
 <h2>IP 列表（前 30）</h2>
 <table>
@@ -415,7 +469,7 @@ async function fetchToken() {
     setTimeout(() => btn.textContent = '生成今日 HMAC Token', 2000);
   } catch (e) { 
     alert('生成失败: ' + e.message + '\n\n请先访问首页获取 cookie');
-    btn.textContent = '重試';
+    btn.textContent = '重试';
   } finally {
     btn.disabled = false;
   }

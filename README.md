@@ -1,52 +1,55 @@
 # ProxyIP US IPv4
 
-Cloudflare Worker + DNS-only ProxyIP 專案：`list.leilaomi.cc.cd` 分發資料；`proxyip.leilaomi.cc.cd` 只解析到 1 個低風險且穩定的主 ProxyIP。當前主 IP 仍有效時不切換，連續失效後才 failover。
+Cloudflare Worker + DNS-only ProxyIP 项目：`list.leilaomi.cc.cd` 分发数据；`proxyip.leilaomi.cc.cd` 只解析到 1 个低风险且稳定的主 ProxyIP。当前主 IP 仍有效时不切换，连续失效后才 failover。
 
-## 線上地址
+## 线上地址
 
-- ProxyIP 域名（DNS-only 單 A 記錄）：`proxyip.leilaomi.cc.cd`
-- Worker 入口頁：https://list.leilaomi.cc.cd/
-- 當前主 ProxyIP：https://list.leilaomi.cc.cd/current.txt
-- 當前主 ProxyIP 詳情：https://list.leilaomi.cc.cd/current.json
-- 備用候選：https://list.leilaomi.cc.cd/standby.txt
-- 推薦 Top 5（當前 + 備用，不直接全量寫入 DNS）：https://list.leilaomi.cc.cd/top5.txt
+- ProxyIP 域名（DNS-only 单 A 记录）：`proxyip.leilaomi.cc.cd`
+- Worker 入口页：https://list.leilaomi.cc.cd/
+- 当前主 ProxyIP：https://list.leilaomi.cc.cd/current.txt
+- 当前主 ProxyIP 详情：https://list.leilaomi.cc.cd/current.json
+- 备用候选：https://list.leilaomi.cc.cd/standby.txt
+- 推荐 Top 5（当前 + 备用，不直接全量写入 DNS）：https://list.leilaomi.cc.cd/top5.txt
 - 全量列表：https://list.leilaomi.cc.cd/all.txt
 - US 列表：https://list.leilaomi.cc.cd/us.txt
 - Top 20：https://list.leilaomi.cc.cd/best.txt
-- 完整報告：https://list.leilaomi.cc.cd/full.json
+- 完整报告：https://list.leilaomi.cc.cd/full.json
 - V2Ray Base64：https://list.leilaomi.cc.cd/v2ray.txt
 - HMAC Token：https://list.leilaomi.cc.cd/token
-- 健康檢查：https://list.leilaomi.cc.cd/health
-- 統計數據：https://list.leilaomi.cc.cd/stats
+- 健康检查：https://list.leilaomi.cc.cd/health
+- 统计数据：https://list.leilaomi.cc.cd/stats
 
-## 認證方式
+## 认证方式
 
-數據接口需要認證，支援兩種方式：
+数据接口需要认证，支持两种方式：
 
-### 1. Cookie 認證（瀏覽器）
-訪問首頁自動設置 `proxyip_access=ok` cookie，有效期 8 小時。
+### 1. Cookie 认证（浏览器）
+访问首页自动设置 `proxyip_access=ok` cookie，有效期 8 小时。
 
-### 2. HMAC Token 認證（程式化訪問）
+### 2. HMAC Token 认证（程式化访问）
 ```bash
-# 1. 先訪問首頁獲取 cookie
+# 1. 先访问首页获取 cookie
 curl -c cookies.txt https://list.leilaomi.cc.cd/
 
-# 2. 用 cookie 訪問 /token 獲取 HMAC token
+# 2. 用 cookie 访问 /token 获取 HMAC token
 curl -b cookies.txt https://list.leilaomi.cc.cd/token
 # 返回: {"token":"20260531-abc123...","date":"20260531","mode":"hmac"}
 
-# 3. 用 HMAC token 訪問數據接口
+# 3. 用 HMAC token 访问数据接口（推荐 Header，避免 token 进入 URL/日志）
+curl -H "Authorization: Bearer 20260531-abc123..." "https://list.leilaomi.cc.cd/all.txt"
+
+# 兼容旧客户端：仍可使用 query token，但不推荐
 curl "https://list.leilaomi.cc.cd/all.txt?t=20260531-abc123..."
 ```
 
-Token 格式：`YYYYMMDD-HMAC-SHA256-Hex`，每天自動更新。
+Token 格式：`YYYYMMDD-HMAC-SHA256-Hex`，每天自动更新。Worker 端必须配置 `PROXYIP_SECRET`；除非显式设置 `ALLOW_LEGACY_DATE_TOKEN=1`，否则不再接受纯日期 legacy token。
 
-### 3. ETag 緩存
-所有數據接口支援 ETag/304 緩存，客戶端可通過 `If-None-Match` 頭部減少頻寬消耗。
+### 3. ETag 缓存
+所有数据接口支持 ETag/304 缓存，客户端可通过 `If-None-Match` 头部减少频宽消耗。
 
-## 當前實際數據
+## 当前实际数据
 
-當前數據以線上 `/health`、`docs/current.txt`、`docs/full.json` 為準。候選數、有效 IP 數、延遲與 Top 5 會隨每次自動巡檢變化，README 不再寫死動態數字。
+当前数据以线上 `/health`、`docs/current.txt`、`docs/full.json` 为准。候选数、有效 IP 数、延迟与 Top 5 会随每次自动巡检变化，README 不再写死动态数字。
 
 快速查看：
 
@@ -61,57 +64,86 @@ print(full["summary"])
 PY
 ```
 
-輸出文件在 `docs/`：
+输出文件在 `docs/`：
 
-- `docs/current.txt`：1 個當前穩定主 IP，用於 `proxyip.leilaomi.cc.cd` DNS-only 單 A 記錄
-- `docs/current.json`：當前主 IP 詳情與狀態
-- `docs/state.json`：failover 狀態、連續失敗次數、最近成功時間
-- `docs/history.json`：切換歷史
-- `docs/standby.txt`：備用候選池
-- `docs/top5.txt`：當前主 IP + 前 4 個備用候選
-- `docs/all.txt`：通過 IPv4 與目標地區檢測的 IP
+- `docs/current.txt`：1 个当前稳定主 IP，用于 `proxyip.leilaomi.cc.cd` DNS-only 单 A 记录
+- `docs/current.json`：当前主 IP 详情与状态
+- `docs/state.json`：failover 状态、连续失败次数、最近成功时间
+- `docs/history.json`：切换历史
+- `docs/standby.txt`：备用候选池
+- `docs/top5.txt`：当前主 IP + 前 4 个备用候选
+- `docs/all.txt`：通过 IPv4 与目标地区检测的 IP
 - `docs/us.txt`：目前等同 `docs/all.txt`
-- `docs/best.txt`：前 20 個
-- `docs/dns-records.json`：Cloudflare DNS A 記錄快照
-- `docs/full.json`：公開檢測報告（不包含完整 debug `all_results`）
-- `docs/v2ray.txt`：Base64 編碼的純 IP 列表；不是完整 V2Ray/VLESS 節點訂閱
+- `docs/best.txt`：前 20 个
+- `docs/dns-records.json`：Cloudflare DNS A 记录快照
+- `docs/full.json`：公开检测报告（不包含完整 debug `all_results`）
+- `docs/v2ray.txt`：Base64 编码的纯 IP 列表；不是完整 V2Ray/VLESS 节点订阅
 
-### 候選源策略
+### 候选源策略
 
-本項目只收集「第三方中轉 ProxyIP」候選，不再使用 Cloudflare 官方 IP 段、普通 CF 優選 IP 或明顯偏 CDN 邊緣的來源。原因是本項目的用途是讓 Cloudflare 服務訪問套 CF CDN 的目標站，而不是尋找 Cloudflare 自身邊緣節點。
+本项目只收集「第三方中转 ProxyIP」候选，不再使用 Cloudflare 官方 IP 段、普通 CF 优选 IP 或明显偏 CDN 边缘的来源。原因是本项目的用途是让 Cloudflare 服务访问套 CF CDN 的目标站，而不是寻找 Cloudflare 自身边缘节点。
 
-目前來源分三類：
+目前来源分三类：
 
-| 類型 | 說明 |
+| 类型 | 说明 |
 |---|---|
-| 文字型 ProxyIP 源 | 例如 `zip.cm.edu.kg/all.txt`，要求內容本身是 ProxyIP 候選 |
-| 域名型 ProxyIP 源 | 例如 CMLiussss 分區 ProxyIP、社區分享 ProxyIP 域名，腳本會解析 A 記錄後再檢測 |
-| 手動源 | `allowlist.txt` / `denylist.txt`，用於臨時保留或排除候選 |
+| 文字型 ProxyIP 源 | 例如 `zip.cm.edu.kg/all.txt`，要求内容本身是 ProxyIP 候选 |
+| 域名型 ProxyIP 源 | 例如 CMLiussss 分区 ProxyIP、社区分享 ProxyIP 域名，脚本会解析 A 记录后再检测 |
+| 手动源 | `allowlist.txt` / `denylist.txt`，用于临时保留或排除候选 |
 
-腳本會下載 Cloudflare 官方 IPv4 段並排除命中的候選，避免誤把 Cloudflare 自身 IP 寫入 ProxyIP 池。
+`allowlist.txt` / `denylist.txt` 每行一个候选，支持以下格式：
+
+```text
+1.2.3.4
+1.2.3.4:443
+1.2.3.4:443#US
+```
+
+脚本会下载 Cloudflare 官方 IPv4 段并排除命中的候选，避免误把 Cloudflare 自身 IP 写入 ProxyIP 池。
+
+
+## 客户端使用示例
+
+`proxyip.leilaomi.cc.cd` 是给客户端填写的稳定 ProxyIP 域名；它只指向当前主 IP，不等于 `top5.txt` 的全部备用列表。
+
+常见用法：
+
+```text
+ProxyIP / proxyIP / proxy_ip: proxyip.leilaomi.cc.cd
+端口: 443
+是否代理: DNS-only / 灰云
+```
+
+如果你的 VLESS Worker 或面板有 `proxyIP`、`PROXYIP`、`ProxyIP` 字段，填入：
+
+```text
+proxyip.leilaomi.cc.cd
+```
+
+不要把 `list.leilaomi.cc.cd` 填到 ProxyIP 字段；`list.` 是数据分发接口，`proxyip.` 才是实际出口域名。
 
 ## Cloudflare 部署
 
-本倉庫按「分發域名 + ProxyIP DNS-only 域名」設計，具體域名應按使用者自己的 Cloudflare zone 調整，不要直接照抄示例域名。
+本仓库按「分发域名 + ProxyIP DNS-only 域名」设计，具体域名应按用户自己的 Cloudflare zone 调整，不要直接照抄示例域名。
 
-需要準備：
+需要准备：
 
-| 配置項 | 說明 | 當前示例 |
+| 配置项 | 说明 | 当前示例 |
 |---|---|---|
-| Worker name | Cloudflare Worker 服務名，見 `wrangler.toml` 的 `name` | `cf-proxyip-us` |
-| Worker 分發域名 | 綁定到 Worker Custom Domain，用於首頁/API/訂閱分發 | `list.<你的域名>` |
-| ProxyIP DNS-only 域名 | 灰雲 A 記錄，只指向當前穩定主 IP | `proxyip.<你的域名>` |
+| Worker name | Cloudflare Worker 服务名，见 `wrangler.toml` 的 `name` | `cf-proxyip-us` |
+| Worker 分发域名 | 绑定到 Worker Custom Domain，用于首页/API/订阅分发 | `list.<你的域名>` |
+| ProxyIP DNS-only 域名 | 灰云 A 记录，只指向当前稳定主 IP | `proxyip.<你的域名>` |
 | Cloudflare zone | 你的根域或托管 zone | `<你的域名>` |
 
-推薦做法：
+推荐做法：
 
-- 分發域名使用子域名，例如 `list.example.com`；
-- ProxyIP 域名使用另一個子域名，例如 `proxyip.example.com`；
-- 不要把 Worker 直接綁到根域，除非你明確要替換根域用途；
-- `ProxyIP DNS-only 域名` 必須是 DNS-only / 灰雲 A 記錄，不能橙雲代理；
-- `workers.dev` 與 preview URL 可關閉，只保留自定義域名。
+- 分发域名使用子域名，例如 `list.example.com`；
+- ProxyIP 域名使用另一个子域名，例如 `proxyip.example.com`；
+- 不要把 Worker 直接绑到根域，除非你明确要替换根域用途；
+- `ProxyIP DNS-only 域名` 必须是 DNS-only / 灰云 A 记录，不能橙云代理；
+- `workers.dev` 与 preview URL 可关闭，只保留自定义域名。
 
-本專案腳本支持用環境變量覆蓋域名配置：
+本项目脚本支持用环境变量覆盖域名配置：
 
 ```bash
 export PROXYIP_ZONE_NAME="example.com"
@@ -119,118 +151,128 @@ export PROXYIP_RECORD_NAME="proxyip.example.com"
 export PROXYIP_LIST_DOMAIN="https://list.example.com"
 ```
 
-配置見 `wrangler.toml`。Worker Custom Domain 需要在 Cloudflare Workers Custom Domains 中綁定到你的分發域名；ProxyIP 域名則由 `scripts/sync_dns.py` 同步為單條 DNS-only A 記錄。
+配置见 `wrangler.toml`。Worker Custom Domain 需要在 Cloudflare Workers Custom Domains 中绑定到你的分发域名；ProxyIP 域名则由 `scripts/sync_dns.py` 同步为单条 DNS-only A 记录。
 
-## 反爬與風險控制
+## 反爬与风险控制
 
-Worker 做了基礎防護，目標是降低公開列表被爬取和被濫用的風險：
+Worker 做了基础防护，目标是降低公开列表被爬取和被滥用的风险：
 
-- Worker 代碼提供 `robots.txt` 禁止抓取；若 Cloudflare 啟用了 managed robots / AI Content Signals，線上 `/robots.txt` 可能由 Cloudflare 接管；
-- 所有響應加 `X-Robots-Tag: noindex,nofollow,noarchive`；
-- 常見 bot / crawler / curl / wget / python-requests / 掃描器 UA 直接 403；
-- 文本與 JSON 數據接口需要認證（Cookie 或 HMAC Token）；公開 `/health` 只返回最小健康信息，詳細 `/health/full` 與 `/stats` 需要認證；
-- 接口使用 `private, max-age=300`，避免被公共緩存長期保存；
-- 支援 ETag/304 緩存，減少不必要的數據傳輸。
+- Worker 代码提供 `robots.txt` 禁止抓取；若 Cloudflare 启用了 managed robots / AI Content Signals，线上 `/robots.txt` 可能由 Cloudflare 接管；
+- 所有响应加 `X-Robots-Tag: noindex,nofollow,noarchive`；
+- 常见 bot / crawler / curl / wget / python-requests / 扫描器 UA 直接 403；带合法 `Authorization: Bearer` 的程序化请求优先通过 token 校验，降低误伤；
+- 文本与 JSON 数据接口需要认证（Cookie 或 HMAC Token）；公开 `/health` 只返回最小健康信息，详细 `/health/full` 与 `/stats` 需要认证；
+- 接口使用 `private, max-age=300`，避免被公共缓存长期保存；
+- 支持 ETag/304 缓存，减少不必要的数据传输。
 
-安全性：HMAC-SHA256 簽名，密鑰存儲在 Cloudflare Worker Secrets 中。
+安全性：HMAC-SHA256 签名，密钥存储在 Cloudflare Worker Secrets 中；`/token` 使用 `private, no-store`，避免被公共缓存保存。
 
-這不是強安全認證；如果要更嚴格，下一步應改為固定私密 token 或 Cloudflare Access。
+这不是强安全认证；如果要更严格，下一步应改为固定私密 token 或 Cloudflare Access。
 
-Rate Limiting：接口使用 `private, max-age=300`，避免被公共緩存長期保存；支援 ETag/304 緩存，減少不必要的數據傳輸。
+Rate Limiting：接口使用 `private, max-age=300`，避免被公共缓存长期保存；支持 ETag/304 缓存，减少不必要的数据传输。
 
-安全 Headers：所有響應加 `X-Robots-Tag: noindex,nofollow,noarchive`；常見 bot / crawler / curl / wget / python-requests / 掃描器 UA 直接 403。
+安全 Headers：所有响应加 `X-Robots-Tag: noindex,nofollow,noarchive`；常见 bot / crawler / curl / wget / python-requests / 扫描器 UA 直接 403。
 
-## 重新生成數據
+## 重新生成数据
 
 ```bash
 python3 build_dataset.py
 ```
 
-腳本會：
+脚本会：
 
-1. 從配置的數據源下載候選 IP（自動去重）
-2. 按 `PROXYIP_TARGET_COUNTRIES`、IPv4、端口等條件過濾
-3. 調用檢測接口驗證可用性
-4. 只保留 `success=true` 且 `supports_ipv4=true` 的結果
-5. 重寫 `result.json` 和 `docs/`
+1. 从配置的数据源下载候选 IP（自动去重）
+2. 按 `PROXYIP_TARGET_COUNTRIES`、IPv4、端口等条件过滤
+3. 调用检测接口验证可用性
+4. 只保留 `success=true` 且 `supports_ipv4=true` 的结果
+5. 将 `direct_https` 备用验证标记为 `fallback_unverified` 并降权排序，避免替代主检测的真实风险评分
+6. Top5 / standby 按 ASN 做分散选择，降低同一 ASN 集中风险
+7. 重写 `result.json` 和 `docs/`
 
-只重新生成本地數據不會更新 Cloudflare。若要同步 KV、DNS 並部署 Worker，使用完整自動流程：
-
-```bash
-python3 scripts/auto_update.py
-```
-
-## 自動巡檢與自癒
-
-端到端腳本：
+只重新生成本地数据不会更新 Cloudflare。若要同步 KV、DNS 并部署 Worker，使用完整自动流程：
 
 ```bash
 python3 scripts/auto_update.py
 ```
 
-它會自動：
+## 自动巡检与自愈
 
-1. 重新生成數據；
-2. 檢測當前主 IP；健康且達到質量門檻時保持不變；連續失效或質量低於門檻後才 failover；
-3. 同步數據到 Worker KV；
-4. 同步 `PROXYIP_RECORD_NAME` 指定的 1 條 DNS-only A 記錄；
-5. 部署 Worker；
-6. 驗證 `PROXYIP_LIST_DOMAIN`、接口防護、DNS、HMAC Token；
-7. 若數據或代碼有變化，自動 commit 並 push 到 GitHub。
+端到端脚本：
 
-自動化不依賴 Zo Computer；可在 GitHub Actions 托管 runner 定時執行。需要在 GitHub repo secrets 中保存 Cloudflare token 與 HMAC token secret，並按你的域名配置環境變量。
+```bash
+python3 scripts/auto_update.py
+```
+
+它会自动：
+
+1. 重新生成数据；
+2. 执行 `scripts/validate_outputs.py` 检查输出文件一致性；
+3. 检测当前主 IP；健康且达到质量门槛时保持不变；连续失效或质量低于门槛后才 failover；
+4. 同步数据到 Worker KV；
+5. 同步 `PROXYIP_RECORD_NAME` 指定的 1 条 DNS-only A 记录；
+6. 部署 Worker；
+7. 验证 `PROXYIP_LIST_DOMAIN`、接口防护、DNS、HMAC Token；
+8. 若数据有变化，只提交白名单数据产物，push 前先 `git pull --rebase --autostash origin main`。
+
+自动化不依赖 Zo Computer；可在 GitHub Actions 托管 runner 定时执行。需要在 GitHub repo secrets 中保存 Cloudflare token 与 HMAC token secret，并按你的域名配置环境变量。
 
 ## GitHub Actions
 
-自動化入口：`.github/workflows/proxyip-auto-update.yml`。
+自动化入口：`.github/workflows/proxyip-auto-update.yml`。
 
-- Cron：每 3 小時一次，`17 */3 * * *` UTC。
-- 可手動執行：GitHub repo → Actions → ProxyIP Auto Update → Run workflow。
-- 使用 GitHub 內建 `GITHUB_TOKEN` 推送資料快照。
-- 使用 repo secret `CLOUDFLARE_API_TOKEN` 更新 DNS 與部署 Worker。
+- Cron：每 3 小时一次，`17 */3 * * *` UTC。
+- 可手动执行：GitHub repo → Actions → ProxyIP Auto Update → Run workflow。
+- 使用 GitHub 内置 `GITHUB_TOKEN` 推送数据快照，checkout 使用完整历史以支持 rebase。
+- 使用 repo secret `CLOUDFLARE_API_TOKEN` 更新 DNS 与部署 Worker。
 - 使用 repo secret `PROXYIP_HMAC_SECRET` 生成 HMAC Token。
+- 部署前先执行 `python3 -m py_compile build_dataset.py scripts/*.py`、`node --check worker.js`、`python3 scripts/validate_outputs.py`。
 
 ### 所需 Secrets
 | Secret | 用途 |
 |--------|------|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API 權限（DNS + Workers） |
-| `PROXYIP_HMAC_SECRET` | GitHub Actions 用於生成 HMAC Token |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API 权限（DNS + Workers） |
+| `PROXYIP_HMAC_SECRET` | GitHub Actions 用于生成 HMAC Token |
 
-Cloudflare Worker 端還需要設置 Worker Secret：`PROXYIP_SECRET`。它的值必須與 GitHub repo secret `PROXYIP_HMAC_SECRET` 相同。
+Cloudflare Worker 端还需要设置 Worker Secret：`PROXYIP_SECRET`。它的值必须与 GitHub repo secret `PROXYIP_HMAC_SECRET` 相同。若未配置，数据接口不再回退到纯日期 token。
 
 ## GitHub Pages
 
-GitHub Pages 不是本專案的主要發布方式。實際發布由兩部分組成：
+GitHub Pages 不是本项目的主要发布方式。实际发布由两部分组成：
 
-- Worker Custom Domain：用於分發首頁、API 和訂閱內容；
-- DNS-only A 記錄：用於指向當前穩定 ProxyIP。
+- Worker Custom Domain：用于分发首页、API 和订阅内容；
+- DNS-only A 记录：用于指向当前稳定 ProxyIP。
 
-倉庫保留 `docs/` 作為可審核的部署數據快照。
+仓库保留 `docs/` 作为可审核的部署数据快照。
 
-## 單一地區策略
+## 单一地区策略
 
-目前策略是穩定優先，且默認鎖定單一出口地區。具體地區由環境變量控制：
+目前策略是稳定优先，且默认锁定单一出口地区。具体地区由环境变量控制：
 
-- `PROXYIP_TARGET_COUNTRIES`：目標出口國家，默認 `US`，可設為如 `JP`、`SG` 或逗號分隔列表；
-- `PROXYIP_PREFERRED_COLOS`：同等風險下優先的 Cloudflare colo，默認 `IAD`；
-- `PROXYIP_RECORD_NAME`：永遠只同步 1 條 DNS-only A 記錄；
-- `PROXYIP_CURRENT_MIN_BOT_SCORE`：當前主 IP 的最低 bot score 門檻，默認 `80`；
-- `PROXYIP_CURRENT_MAX_LATENCY_MS`：當前主 IP 的最大延遲門檻，默認 `2500`；
-- `PROXYIP_SWITCH_COOLDOWN_HOURS`：切換冷卻時間，默認 `6` 小時。
+- `PROXYIP_TARGET_COUNTRIES`：目标出口国家，默认 `US`，可设为如 `JP`、`SG` 或逗号分隔列表；
+- `PROXYIP_PREFERRED_COLOS`：同等风险下优先的 Cloudflare colo，默认 `IAD`；
+- `PROXYIP_RECORD_NAME`：永远只同步 1 条 DNS-only A 记录；
+- `PROXYIP_CURRENT_MIN_BOT_SCORE`：当前主 IP 的最低 bot score 门槛，默认 `80`；
+- `PROXYIP_CURRENT_MAX_LATENCY_MS`：当前主 IP 的最大延迟门槛，默认 `2500`；
+- `PROXYIP_SWITCH_COOLDOWN_HOURS`：切换冷却时间，默认 `6` 小时。
 
-當前 IP 健康、符合目標地區且達到質量門檻時不切換，避免 AI / CDN 站點看到出口亂跳。如需改成其他地區，調整上述環境變量後重新跑 `scripts/auto_update.py`。
+当前 IP 健康、符合目标地区且达到质量门槛时不切换，避免 AI / CDN 站点看到出口乱跳。如需改成其他地区，调整上述环境变量后重新跑 `scripts/auto_update.py`。
 
 
-### 2026-06-02 — 穩定性與線上核查後改進
+## 📖 延伸阅读
 
-| 文件 | 改進 |
+- [docs/audit-2026-06-04.md](docs/audit-2026-06-04.md) — 项目改进建议报告（2026-06-04，58 条）
+- [docs/implementation-plan-2026-06-04.md](docs/implementation-plan-2026-06-04.md) — 分阶段落地计划
+
+
+### 2026-06-02 — 稳定性与线上核查后改进
+
+| 文件 | 改进 |
 |------|------|
-| `build_dataset.py` | 修復直接 HTTPS fallback 結果與 `enrich()` 字段不兼容的問題 |
-| `build_dataset.py` | 增加當前主 IP 最低質量門檻與切換冷卻時間 |
-| `build_dataset.py` | `docs/full.json` 不再提交完整 `all_results` debug 數據，降低倉庫體積 |
-| `worker.js` | `/health` 改為最小公開信息，新增需認證的 `/health/full` |
-| `worker.js` | `/stats` 改為需 Cookie/HMAC Token 認證 |
-| `worker.js` | 增加數據新鮮度 stale 判斷、HEAD 支持、304 安全 headers、CSP、Permissions-Policy |
-| `worker.js` | Rate limiter 增加過期 bucket 清理 |
-| `scripts/*.py` | 域名與 zone 支援環境變量覆蓋 |
-| `README.md` | 移除易過期的動態數字，明確 GitHub Secret 與 Worker Secret 的關係 |
+| `build_dataset.py` | 修复直接 HTTPS fallback 结果与 `enrich()` 字段不兼容的问题 |
+| `build_dataset.py` | 增加当前主 IP 最低质量门槛与切换冷却时间 |
+| `build_dataset.py` | `docs/full.json` 不再提交完整 `all_results` debug 数据，降低仓库体积 |
+| `worker.js` | `/health` 改为最小公开信息，新增需认证的 `/health/full` |
+| `worker.js` | `/stats` 改为需 Cookie/HMAC Token 认证 |
+| `worker.js` | 增加数据新鲜度 stale 判断、HEAD 支持、304 安全 headers、CSP、Permissions-Policy |
+| `worker.js` | Rate limiter 增加过期 bucket 清理 |
+| `scripts/*.py` | 域名与 zone 支持环境变量覆盖 |
+| `README.md` | 移除易过期的动态数字，明确 GitHub Secret 与 Worker Secret 的关系 |

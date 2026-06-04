@@ -66,6 +66,7 @@ DOCS = Path("docs")
 STATE_PATH = DOCS / "state.json"
 CURRENT_PATH = DOCS / "current.txt"
 HISTORY_PATH = DOCS / "history.json"
+IP_HISTORY_PATH = DOCS / "ip_history.json"
 MANUAL_ALLOWLIST = Path("allowlist.txt")
 MANUAL_DENYLIST = Path("denylist.txt")
 
@@ -315,6 +316,7 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
                 "colo": None,
                 "cf_bot_score": 95,
                 "method": "direct_https",
+                "fallback_unverified": True,
             }
         return {"ip": ip, "success": False, "error": "not_cloudflare", "latency_ms": latency}
 
@@ -363,7 +365,8 @@ def enrich(item: dict, source_meta: dict | None = None) -> dict:
     corporate = bool(bm.get("corporateProxy"))
     verified = bool(bm.get("verifiedBot"))
     latency = item.get("latency_ms") if isinstance(item.get("latency_ms"), int) else 999999
-    penalty = (100 - int(score or 0)) * 1000 + (50000 if corporate else 0) + (50000 if verified else 0) + latency
+    fallback = item.get("method") == "direct_https" or bool(item.get("fallback_unverified"))
+    penalty = (100 - int(score or 0)) * 1000 + (50000 if corporate else 0) + (50000 if verified else 0) + (FALLBACK_RANK_PENALTY if fallback else 0) + latency
     item["sources"] = source_meta.get("sources", [])
     item["source_domains"] = source_meta.get("source_domains", [])
     item["source_type"] = source_meta.get("source_type")
@@ -373,13 +376,16 @@ def enrich(item: dict, source_meta: dict | None = None) -> dict:
         "corporate_proxy": corporate,
         "verified_bot": verified,
         "penalty": penalty,
-        "grade": "low" if score is not None and score >= 90 and not corporate and not verified else "medium",
+        "grade": "fallback_unverified" if fallback else ("low" if score is not None and score >= 90 and not corporate and not verified else "medium"),
+        "verification_method": "direct_https" if fallback else "cmliu",
         "asn": ex.get("asn"),
         "as_organization": ex.get("asOrganization") or ex.get("org"),
         "exit_ip": ex.get("ip"),
         "country": ex.get("country") or source_meta.get("country_hint"),
         "city": ex.get("city"),
-        "colo": item.get("colo") or ex.get("colo"),
+        "candidate_colo": item.get("colo"),
+        "exit_colo": ex.get("colo"),
+        "colo": ex.get("colo") or item.get("colo"),
     }
     item["stable_score"] = stable_score(item)
     return item
@@ -392,6 +398,9 @@ def is_target_region(item: dict) -> bool:
     return not TARGET_COUNTRIES or country in TARGET_COUNTRIES
 
 MAX_PER_ASN = 10  # 同 ASN 最多保留 N 个 IP，防止过于集中
+TOP5_MAX_PER_ASN = 1
+STANDBY_MAX_PER_ASN = 2
+FALLBACK_RANK_PENALTY = 200000
 
 def limit_asn_spread(items: list[dict], max_per_asn: int = MAX_PER_ASN) -> list[dict]:
     """限制同 ASN 最多保留 max_per_n 个 IP，输入已按 rank_key 排序（最优在前）"""
@@ -407,7 +416,7 @@ def limit_asn_spread(items: list[dict], max_per_asn: int = MAX_PER_ASN) -> list[
 
 def preferred_colo_rank(item: dict) -> int:
     risk = item.get("risk") or {}
-    colo = risk.get("colo") or item.get("colo") or ""
+    colo = risk.get("exit_colo") or risk.get("colo") or item.get("colo") or ""
     try:
         return PREFERRED_COLOS.index(colo)
     except ValueError:
@@ -442,7 +451,8 @@ def stable_score(item: dict) -> int:
     score = risk.get("cf_bot_score") or 0
     latency = item.get("latency_ms") if isinstance(item.get("latency_ms"), int) else 999999
     source_bonus = min(item.get("source_count") or 0, 4) * 50
-    return int(score) * 1000 - latency - (50000 if risk.get("corporate_proxy") else 0) - (50000 if risk.get("verified_bot") else 0) + source_bonus
+    fallback_penalty = FALLBACK_RANK_PENALTY if risk.get("grade") == "fallback_unverified" else 0
+    return int(score) * 1000 - latency - (50000 if risk.get("corporate_proxy") else 0) - (50000 if risk.get("verified_bot") else 0) - fallback_penalty + source_bonus
 
 
 def rank_key(item: dict) -> tuple:
@@ -570,6 +580,7 @@ def slim_item(item: dict) -> dict:
         "source_type": item.get("source_type"),
         "source_count": item.get("source_count", len(item.get("sources", []))),
         "stable_score": item.get("stable_score"),
+        "verification_method": risk.get("verification_method"),
         "selection_reason": item.get("selection_reason"),
         "risk": {
             "cf_bot_score": risk.get("cf_bot_score"),
@@ -580,16 +591,86 @@ def slim_item(item: dict) -> dict:
             "as_organization": risk.get("as_organization"),
             "country": risk.get("country"),
             "city": risk.get("city"),
+            "candidate_colo": risk.get("candidate_colo"),
+            "exit_colo": risk.get("exit_colo"),
         },
     }
+
+
+def asn_key(item: dict) -> str:
+    return str((item.get("risk") or {}).get("asn") or "unknown")
+
+
+def diverse_candidates(items: list[dict], current: dict, count: int, max_per_asn: int) -> list[dict]:
+    selected: list[dict] = []
+    asn_count: dict[str, int] = {}
+    current_asn = asn_key(current)
+    if current_asn != "unknown":
+        asn_count[current_asn] = 1
+    for item in items:
+        if item.get("ip") == current.get("ip"):
+            continue
+        asn = asn_key(item)
+        if asn_count.get(asn, 0) >= max_per_asn:
+            continue
+        selected.append(item)
+        asn_count[asn] = asn_count.get(asn, 0) + 1
+        if len(selected) >= count:
+            break
+    return selected
+
+
+def load_ip_history() -> dict:
+    if IP_HISTORY_PATH.exists():
+        try:
+            data = json.loads(IP_HISTORY_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def update_ip_history(results: list[dict], valid: list[dict], checked_at: str) -> dict:
+    history = load_ip_history()
+    by_ip = {item.get("ip"): item for item in valid if item.get("ip")}
+    seen_ips = {item.get("ip") for item in results if item.get("ip")} | set(by_ip)
+    cutoff = datetime.fromtimestamp(time.time() - 7 * 24 * 60 * 60, tz=timezone.utc).isoformat()
+    for ip in sorted(seen_ips):
+        if not ip:
+            continue
+        record = history.get(ip, {"checks": []})
+        checks = [x for x in record.get("checks", []) if isinstance(x, dict) and str(x.get("checked_at", "")) >= cutoff]
+        valid_item = by_ip.get(ip)
+        checks.append({
+            "checked_at": checked_at,
+            "success": valid_item is not None,
+            "latency_ms": valid_item.get("latency_ms") if valid_item else None,
+            "stable_score": valid_item.get("stable_score") if valid_item else None,
+            "grade": (valid_item.get("risk") or {}).get("grade") if valid_item else None,
+            "verification_method": (valid_item.get("risk") or {}).get("verification_method") if valid_item else None,
+        })
+        checks = checks[-56:]
+        success_count = sum(1 for x in checks if x.get("success"))
+        latencies = [x.get("latency_ms") for x in checks if isinstance(x.get("latency_ms"), (int, float))]
+        scores = [x.get("stable_score") for x in checks if isinstance(x.get("stable_score"), (int, float))]
+        history[ip] = {
+            "success_rate_7d": round(success_count / len(checks), 4) if checks else 0,
+            "avg_latency_ms_7d": round(sum(latencies) / len(latencies), 2) if latencies else None,
+            "avg_stable_score_7d": round(sum(scores) / len(scores), 2) if scores else None,
+            "last_checked_at": checked_at,
+            "checks": checks,
+        }
+    return history
 
 
 def write_outputs(out: dict, current: dict, state: dict, history: list[dict]) -> None:
     DOCS.mkdir(exist_ok=True)
     valid = out["valid_ips"]
     ips = [x["ip"] for x in valid]
-    standby = [x for x in valid if x["ip"] != current["ip"]][:STANDBY_COUNT]
-    top5 = [x["ip"] for x in ([current] + standby)[:5] if x.get("ip")]
+    standby = diverse_candidates(valid, current, STANDBY_COUNT, STANDBY_MAX_PER_ASN)
+    recommended_top5 = [current] + diverse_candidates(valid, current, 4, TOP5_MAX_PER_ASN)
+    top5 = [x["ip"] for x in recommended_top5 if x.get("ip")]
 
     (DOCS / "all.txt").write_text("\n".join(ips) + ("\n" if ips else ""), encoding="utf-8")
     (DOCS / "us.txt").write_text("\n".join(ips) + ("\n" if ips else ""), encoding="utf-8")
@@ -603,6 +684,8 @@ def write_outputs(out: dict, current: dict, state: dict, history: list[dict]) ->
     (DOCS / "current.json").write_text(json.dumps({"current": slim_item(current), "state": state}, ensure_ascii=False, indent=2), encoding="utf-8")
     (DOCS / "state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     (DOCS / "history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    ip_history = update_ip_history(out.get("all_results", []), valid, out.get("summary", {}).get("checked_at") or now_iso())
+    (DOCS / "ip_history.json").write_text(json.dumps(ip_history, ensure_ascii=False, indent=2), encoding="utf-8")
     public_out = {k: v for k, v in out.items() if k != "all_results"}
     (DOCS / "full.json").write_text(json.dumps({**public_out, "current": current, "standby": standby, "state": state, "history": history}, ensure_ascii=False, indent=2), encoding="utf-8")
     (DOCS / "dns-records.json").write_text(json.dumps([{
@@ -616,6 +699,21 @@ def write_outputs(out: dict, current: dict, state: dict, history: list[dict]) ->
         "port": current.get("portRemote", 443),
         "selection_reason": current.get("selection_reason"),
     }], ensure_ascii=False, indent=2), encoding="utf-8")
+    (DOCS / "kv-manifest.json").write_text(json.dumps({
+        "result_json": "docs/full.json",
+        "current_json": "docs/current.json",
+        "current_txt": "docs/current.txt",
+        "standby_txt": "docs/standby.txt",
+        "top5_txt": "docs/top5.txt",
+        "all_txt": "docs/all.txt",
+        "us_txt": "docs/us.txt",
+        "best_txt": "docs/best.txt",
+        "base64_txt": "docs/base64.txt",
+        "v2ray_txt": "docs/v2ray.txt",
+        "history_json": "docs/history.json",
+        "ip_history_json": "docs/ip_history.json",
+        "state_json": "docs/state.json",
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main() -> None:
@@ -652,7 +750,7 @@ def main() -> None:
             "target_countries": sorted(TARGET_COUNTRIES),
             "preferred_colos": PREFERRED_COLOS,
             "selection_policy": "single stable current IP; keep while healthy and still in target region; fail over only after consecutive validation failures",
-            "ranking": "lowest risk first: Cloudflare bot score, preferred colo, no corporateProxy, no verifiedBot, source count, lower latency",
+            "ranking": "lowest risk first: Cloudflare bot score, preferred exit colo, no corporateProxy, no verifiedBot, source count, lower latency; direct_https fallback is marked fallback_unverified and heavily down-ranked",
             "total_candidates": len(candidates),
             "cmliu_ipv4_valid_before_region_filter": pre_region_valid_count,
             "cmliu_ipv4_valid": len(valid),
@@ -661,7 +759,7 @@ def main() -> None:
             "checked_at": now_iso(),
             "checker": CHECK_API,
         },
-        "recommended_top5": [current] + [x for x in valid if x["ip"] != current["ip"]][:4],
+        "recommended_top5": [current] + diverse_candidates(valid, current, 4, TOP5_MAX_PER_ASN),
         "valid_ips": valid,
         "all_results": results,
     }

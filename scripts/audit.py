@@ -36,8 +36,11 @@ def hmac_token() -> str:
         raise SystemExit("Cannot obtain HMAC token from /token")
     return token
 
-def fetch(url: str) -> tuple[int, str]:
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0 ProxyIPAudit"})
+def fetch(url: str, token: str | None = None) -> tuple[int, str]:
+    headers = {"User-Agent": "Mozilla/5.0 ProxyIPAudit"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = Request(url, headers=headers)
     try:
         with urlopen(req, timeout=30) as res:
             return res.status, res.read().decode("utf-8", "ignore")
@@ -93,10 +96,10 @@ def main() -> None:
     assert_true(resolved == [current], f"DNS must resolve to exactly current IP: {resolved} != {[current]}")
 
     # Live endpoint checks (using HMAC token)
-    status, body = fetch(f"{LIST_DOMAIN}/current.txt?t={token}&r={int(time.time())}")
+    status, body = fetch(f"{LIST_DOMAIN}/current.txt?r={int(time.time())}", token)
     assert_true(status == 200 and body.strip() == current, f"live current.txt mismatch: {status} {body[:120]}")
 
-    status, body = fetch(f"{LIST_DOMAIN}/health/full?t={token}&r={int(time.time())}")
+    status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token)
     assert_true(status == 200, f"live health failed: {status} {body[:120]}")
     health = json.loads(body)
     assert_true(health.get("current") == current, "live health current mismatch")

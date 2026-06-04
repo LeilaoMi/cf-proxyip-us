@@ -36,8 +36,11 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, check=check)
 
 
-def fetch(url: str) -> tuple[int, str]:
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+def fetch(url: str, token: str | None = None) -> tuple[int, str]:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = Request(url, headers=headers)
     try:
         with urlopen(req, timeout=45) as res:
             return res.status, res.read().decode("utf-8", "ignore")
@@ -59,21 +62,6 @@ def git_dirty() -> bool:
     return bool(out.strip())
 
 
-def validate_outputs() -> None:
-    primary = current_primary()
-    if not primary:
-        raise RuntimeError("Missing docs/current.txt primary ProxyIP")
-    dns_rows = json.loads(Path("docs/dns-records.json").read_text(encoding="utf-8"))
-    if len(dns_rows) != 1 or dns_rows[0].get("content") != primary:
-        raise RuntimeError("docs/dns-records.json must contain exactly the current primary IP")
-    all_ips = [x.strip() for x in Path("docs/all.txt").read_text(encoding="utf-8").splitlines() if x.strip()]
-    if len(all_ips) < 5:
-        raise RuntimeError("Too few valid IPs")
-    full = json.loads(Path("docs/full.json").read_text(encoding="utf-8"))
-    if full["summary"].get("cmliu_ipv4_valid") != len(all_ips):
-        raise RuntimeError("docs/full.json count does not match docs/all.txt")
-
-
 def verify_live() -> None:
     """Wait for Cloudflare global sync then verify live endpoints."""
     print("⏳ Waiting 30s for Cloudflare global sync...", flush=True)
@@ -88,7 +76,7 @@ def verify_live() -> None:
     expected = [primary]
     # Wait up to 20 attempts × 10s for current.txt to match
     for attempt in range(1, 21):
-        status, body = fetch(f"{LIST_DOMAIN}/current.txt?t={token}&r={int(time.time())}")
+        status, body = fetch(f"{LIST_DOMAIN}/current.txt?r={int(time.time())}", token)
         if status == 200:
             live = [x.strip() for x in body.splitlines() if x.strip()]
             if live == expected:
@@ -103,7 +91,7 @@ def verify_live() -> None:
         print("⚠️  Live current.txt verification timed out, DNS will sync in background", flush=True)
 
     # Verify health endpoint
-    status, body = fetch(f"{LIST_DOMAIN}/health/full?t={token}&r={int(time.time())}")
+    status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token)
     if status == 200:
         health = json.loads(body)
         print(f"✅ Health: {json.dumps(health)}", flush=True)
@@ -115,8 +103,11 @@ def main() -> None:
     before = current_primary()
 
     # Step 1: Generate fresh data
-    run([sys.executable, "build_dataset.py"])
-    validate_outputs()
+    if os.environ.get("PROXYIP_SKIP_GENERATE") == "1":
+        print("Skipping build_dataset.py because PROXYIP_SKIP_GENERATE=1", flush=True)
+    else:
+        run([sys.executable, "build_dataset.py"])
+    run([sys.executable, "scripts/validate_outputs.py"])
 
     after = current_primary()
 
@@ -134,10 +125,15 @@ def main() -> None:
     if changed:
         run(["git", "config", "user.name", "github-actions[bot]"])
         run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
-        run(["git", "add", "."])
-        message = "Auto switch stable ProxyIP" if before != after else "Auto refresh ProxyIP data"
-        run(["git", "commit", "-m", message], check=False)
-        run(["git", "push"])
+        run(["git", "add", "docs/all.txt", "docs/base64.txt", "docs/best.txt", "docs/current.json", "docs/current.txt", "docs/dns-records.json", "docs/full.json", "docs/history.json", "docs/kv-manifest.json", "docs/standby.txt", "docs/state.json", "docs/top5.txt", "docs/us.txt", "docs/v2ray.txt"])
+        valid_count = len([x for x in Path("docs/all.txt").read_text().splitlines() if x.strip()])
+        message = f"Auto refresh ProxyIP data: current={after} valid={valid_count}"
+        commit = run(["git", "commit", "-m", message], check=False)
+        if commit.returncode == 0:
+            run(["git", "pull", "--rebase", "--autostash", "origin", "main"])
+            run(["git", "push"])
+        else:
+            print("No commit created; skipping push", flush=True)
 
     summary = {
         "changed_current": before != after,
