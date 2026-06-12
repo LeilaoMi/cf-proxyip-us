@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      CLOUDFLARE_ACCOUNT_ID: 7a008dc2b0c06b522b5a1aed2b628755
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PROXYIP_HMAC_SECRET: ${{ secrets.PROXYIP_HMAC_SECRET }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
