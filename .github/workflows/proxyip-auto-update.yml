@@ -1,3 +1,4 @@
+# 自动维护 ProxyIP 数据：生成数据 -> 校验 -> 同步 KV -> 同步 DNS -> 部署 Worker
 name: ProxyIP Auto Update
 
 on:
@@ -17,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
+      # Account ID 不是密钥；API Token 必须只放在 GitHub Secret 中。
       CLOUDFLARE_ACCOUNT_ID: 7a008dc2b0c06b522b5a1aed2b628755
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PROXYIP_HMAC_SECRET: ${{ secrets.PROXYIP_HMAC_SECRET }}
@@ -47,6 +49,7 @@ jobs:
           python3 -m unittest discover -s tests
 
       - name: Run ProxyIP auto update
+        # 执行 scripts/auto_update.py：同步 KV、DNS、部署 Worker，并验证线上接口。
         env:
           PROXYIP_SKIP_GENERATE: "1"
         run: python3 scripts/auto_update.py
