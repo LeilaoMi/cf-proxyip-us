@@ -1,7 +1,7 @@
 {
   "current": {
     "ip": "43.170.25.96",
-    "latency_ms": 292,
+    "latency_ms": 402,
     "portRemote": 443,
     "colo": "IAD",
     "sources": [
@@ -14,7 +14,7 @@
     ],
     "source_type": "domain_proxyip",
     "source_count": 3,
-    "stable_score": 98858,
+    "stable_score": 98748,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -23,10 +23,10 @@
       "corporate_proxy": false,
       "verified_bot": false,
       "asn": 139341,
-      "as_organization": "16 COLLYER QUAY # 18-29 INCOME AT RAFFLES",
+      "as_organization": "6 COLLYER QUAY",
       "country": "US",
       "city": "Ashburn",
-      "candidate_colo": "IAD",
+      "candidate_colo": "SJC",
       "exit_colo": "IAD"
     }
   },
@@ -35,8 +35,8 @@
     "status": "healthy",
     "failure_count": 0,
     "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-    "last_success_at": "2026-06-24T20:14:22.417741+00:00",
-    "last_checked_at": "2026-06-24T20:14:22.417741+00:00",
+    "last_success_at": "2026-06-24T22:42:49.782339+00:00",
+    "last_checked_at": "2026-06-24T22:42:49.782339+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": null,
