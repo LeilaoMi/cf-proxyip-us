@@ -1,7 +1,7 @@
 {
   "current": {
     "ip": "43.170.25.96",
-    "latency_ms": 188,
+    "latency_ms": 118,
     "portRemote": 443,
     "colo": "IAD",
     "sources": [
@@ -14,7 +14,7 @@
     ],
     "source_type": "domain_proxyip",
     "source_count": 3,
-    "stable_score": 98962,
+    "stable_score": 99032,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -26,7 +26,7 @@
       "as_organization": "ACE",
       "country": "US",
       "city": "Ashburn",
-      "candidate_colo": "ORD",
+      "candidate_colo": "IAD",
       "exit_colo": "IAD"
     }
   },
@@ -35,8 +35,8 @@
     "status": "healthy",
     "failure_count": 0,
     "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-    "last_success_at": "2026-06-29T11:26:55.822592+00:00",
-    "last_checked_at": "2026-06-29T11:26:55.822592+00:00",
+    "last_success_at": "2026-06-29T16:14:55.922909+00:00",
+    "last_checked_at": "2026-06-29T16:14:55.922909+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": null,
