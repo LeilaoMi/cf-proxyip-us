@@ -1,7 +1,7 @@
 {
   "current": {
     "ip": "43.170.25.96",
-    "latency_ms": 297,
+    "latency_ms": 106,
     "portRemote": 443,
     "colo": "IAD",
     "sources": [
@@ -14,7 +14,7 @@
     ],
     "source_type": "domain_proxyip",
     "source_count": 3,
-    "stable_score": 98853,
+    "stable_score": 99044,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -26,7 +26,7 @@
       "as_organization": "6 COLLYER QUAY",
       "country": "US",
       "city": "Ashburn",
-      "candidate_colo": "DFW",
+      "candidate_colo": "IAD",
       "exit_colo": "IAD"
     }
   },
@@ -35,8 +35,8 @@
     "status": "healthy",
     "failure_count": 0,
     "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-    "last_success_at": "2026-07-01T04:57:40.265192+00:00",
-    "last_checked_at": "2026-07-01T04:57:40.265192+00:00",
+    "last_success_at": "2026-07-01T10:18:41.084083+00:00",
+    "last_checked_at": "2026-07-01T10:18:41.084083+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": null,
