@@ -9,19 +9,19 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1094,
+      "penalty": 1499,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 139341,
       "as_organization": "16 COLLYER QUAY # 18-29 INCOME AT RAFFLES",
-      "exit_ip": "43.175.171.135",
+      "exit_ip": "43.175.183.41",
       "country": "US",
-      "city": "Ashburn",
-      "candidate_colo": "IAD",
-      "exit_colo": "IAD",
-      "colo": "IAD"
+      "city": "Los Angeles",
+      "candidate_colo": "SJC",
+      "exit_colo": "LAX",
+      "colo": "LAX"
     },
-    "latency_ms": 94,
+    "latency_ms": 499,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
