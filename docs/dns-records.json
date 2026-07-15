@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1179,
+      "penalty": 1187,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 139341,
@@ -21,7 +21,7 @@
       "exit_colo": "IAD",
       "colo": "IAD"
     },
-    "latency_ms": 179,
+    "latency_ms": 187,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
