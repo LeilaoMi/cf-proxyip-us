@@ -9,19 +9,19 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1386,
+      "penalty": 1373,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 139341,
       "as_organization": "ACE",
-      "exit_ip": "43.152.135.77",
+      "exit_ip": "43.152.134.101",
       "country": "US",
       "city": "Ashburn",
       "candidate_colo": "SJC",
       "exit_colo": "IAD",
       "colo": "IAD"
     },
-    "latency_ms": 386,
+    "latency_ms": 373,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }

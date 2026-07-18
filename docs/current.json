@@ -1,7 +1,7 @@
 {
   "current": {
     "ip": "43.170.25.96",
-    "latency_ms": 386,
+    "latency_ms": 373,
     "portRemote": 443,
     "colo": "IAD",
     "sources": [
@@ -11,7 +11,7 @@
     "source_domains": [],
     "source_type": null,
     "source_count": 2,
-    "stable_score": 98714,
+    "stable_score": 98727,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -32,8 +32,8 @@
     "status": "healthy",
     "failure_count": 0,
     "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-    "last_success_at": "2026-07-18T16:14:34.335092+00:00",
-    "last_checked_at": "2026-07-18T16:14:34.335092+00:00",
+    "last_success_at": "2026-07-18T19:37:11.457217+00:00",
+    "last_checked_at": "2026-07-18T19:37:11.457217+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": null,
