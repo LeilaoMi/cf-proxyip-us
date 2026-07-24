@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1100,
+      "penalty": 1234,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 139341,
@@ -17,11 +17,11 @@
       "exit_ip": "43.152.134.101",
       "country": "US",
       "city": "Ashburn",
-      "candidate_colo": "IAD",
+      "candidate_colo": "ORD",
       "exit_colo": "IAD",
       "colo": "IAD"
     },
-    "latency_ms": 100,
+    "latency_ms": 234,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
