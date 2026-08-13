@@ -9,19 +9,19 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1352,
+      "penalty": 1110,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 139341,
       "as_organization": "6 COLLYER QUAY",
-      "exit_ip": "43.146.65.125",
+      "exit_ip": "43.146.63.115",
       "country": "US",
       "city": "Ashburn",
-      "candidate_colo": "LAX",
+      "candidate_colo": "IAD",
       "exit_colo": "IAD",
       "colo": "IAD"
     },
-    "latency_ms": 352,
+    "latency_ms": 110,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
