@@ -2,3 +2,4 @@ __pycache__/
 .wrangler/
 *.log
 result.json
+docs/full.slim.json

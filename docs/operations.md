@@ -17,19 +17,29 @@ GitHub Actions workflow：
 
 主要步骤：
 
-1. Checkout 仓库。
+1. Checkout 仓库完整历史。
 2. 安装 Node 20。
 3. 安装 `wrangler@4`。
 4. Python / Worker 语法检查。
-5. 生成 ProxyIP 数据。
+5. `build_dataset.py` 生成 ProxyIP 数据（四阶段探测排序，见 README「排序与测速：四个阶段」）。
 6. 校验 `docs/` 输出。
 7. 运行单元测试。
-8. 执行 `scripts/auto_update.py`。
+8. 执行 `scripts/auto_update.py`（job env 带 `PROXYIP_SKIP_GENERATE=1`，跳过第 5 步已做过的生成）。
 9. 同步 KV。
 10. 同步 DNS-only A 记录。
 11. 部署 Worker。
 12. 线上验证。
-13. 如数据变化，提交 `docs/` 快照。
+13. 如数据变化，按白名单提交 `docs/` 快照。
+
+job 超时 45 分钟。workflow 写 `node-version: "20"`，GitHub 托管 runner 已弃用 Node 20，可能被强制升级，只要 `wrangler@4` 装得上即可。
+
+手动触发与跟踪：
+
+```bash
+gh workflow run proxyip-auto-update.yml -R LeilaoMi/cf-proxyip-us --ref main
+gh run list -R LeilaoMi/cf-proxyip-us --limit 5
+gh run watch <run-id> -R LeilaoMi/cf-proxyip-us --interval 15 --exit-status
+```
 
 ## 2. KV 同步
 
@@ -55,6 +65,8 @@ PUT /client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values
 | API Token | `CLOUDFLARE_API_TOKEN` |
 | KV Namespace ID | `wrangler.toml` |
 | KV key 列表 | `docs/kv-manifest.json` |
+
+`docs/kv-manifest.json` 里 `result_json` 指向 `docs/full.json`，但上传前脚本会把内容读出来、再跑一遍 `slim_full()`（剔除 `all_results`）写到 `docs/full.slim.json`，然后 PUT 这个瘦身版。由于 `docs/full.json` 生成时已经剔过 `all_results` 和 `throughput_by_ip`，实际差异主要是重新按 `indent=2` 序列化。`docs/full.slim.json` 已 gitignore，不要提交。
 
 不要再改回 `wrangler kv key put`，否则可能再次触发 Wrangler 在 CI 中访问 `/memberships`、`/accounts` 导致认证失败。
 
@@ -134,15 +146,13 @@ Cloudflare API Token 至少需要：
 - Cloudflare Worker Secret `PROXYIP_SECRET` 是否存在。
 - 两者是否一致。
 
-## 7. 最近验证记录
+## 7. 验证方式
 
-最近一次修复后已手动触发并验证成功：
+看最新一次运行，不要依赖固定的 run 编号：
 
-```text
-https://github.com/LeilaoMi/cf-proxyip-us/actions/runs/27439555741
-```
+- https://github.com/LeilaoMi/cf-proxyip-us/actions
 
-验证结论：
+一次 success 的运行意味着：
 
 - 数据生成成功。
 - 输出校验成功。
@@ -150,4 +160,11 @@ https://github.com/LeilaoMi/cf-proxyip-us/actions/runs/27439555741
 - KV 同步成功。
 - DNS 同步成功。
 - Worker 部署成功。
-- workflow conclusion 为 success。
+- 线上 `current.txt` 与 `docs/` 一致。
+
+部署后也可直接看线上状态：
+
+```text
+https://proxyip.leilaomi.cc.cd/status
+https://proxyip.leilaomi.cc.cd/current.txt
+```
