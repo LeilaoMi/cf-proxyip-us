@@ -59,6 +59,8 @@ Cloudflare
 | `docs/current.json` | 当前主 IP 的详细状态 |
 | `docs/state.json` | failover 状态、连续失败次数、最近成功时间 |
 | `docs/history.json` | 主 IP 切换历史 |
+| `docs/ip_history.json` | 每个 IP 的滚动稳定性窗口，排序和主 IP 质量判定的输入 |
+| `docs/probe_local.json` | `PROXYIP_PROBE_ONLY=1` 在本机产出的 RTT + 吞吐数据，CI 按权重合并；只由本地运行提交 |
 | `docs/standby.txt` | 备用候选池 |
 | `docs/top5.txt` | 当前主 IP + 前 4 个备用候选 |
 | `docs/all.txt` | 通过 IPv4 与目标地区检测的全部候选 |
@@ -239,6 +241,13 @@ python3 scripts/validate_outputs.py
 python3 -m unittest discover -s tests
 ```
 
+只在本机探测（约 6 分钟），产出本地 RTT 与吞吐供 CI 加权合并：
+
+```bash
+PROXYIP_PROBE_ONLY=1 python3 build_dataset.py
+git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
+```
+
 完整自动流程，包括 KV、DNS、Worker 部署和线上验证：
 
 ```bash
@@ -283,6 +292,57 @@ python3 scripts/auto_update.py
 - Top5 / standby 会按 ASN 分散选择，降低同一 ASN 集中风险。
 - DNS 永远只发布 1 个当前主 IP，备用池只通过 Worker 分发。
 
+## 测速与稳定性排序
+
+排序分两段：先过门槛，再按速度升序。门槛内 bot score 不再加分，只在速度完全相同时做并列参考。
+
+第一步，本机对每个通过验证的候选做 `PROXYIP_PROBE_SAMPLES` 次 TCP + TLS 握手采样，取 P50 作为 `latency_ms`，取 max - min 作为 `rtt_jitter_ms`。这是不依赖第三方测速 API 的真实首跳成本；第三方检测 API 的往返时间单独保留在 `api_latency_ms`。
+
+第二步，以下任一不满足就排到后面：
+
+- bot score 低于 `PROXYIP_CURRENT_MIN_BOT_SCORE`，或命中 corporateProxy / verifiedBot
+- `direct_https` 兜底路径（未验证出口，bot score 是硬编码值）
+- P50 延迟高于 `PROXYIP_CURRENT_MAX_LATENCY_MS`
+- 抖动高于 `PROXYIP_MAX_JITTER_MS`
+- 有效样本不足 `PROXYIP_PROBE_MIN_SAMPLES` 次 —— 3 次握手失败 2 次时只剩 1 个样本，抖动会被算成 0，不单独判负的话测量失败反而会伪装成最稳定
+- 出口不在 `PROXYIP_TARGET_COUNTRIES`
+- 7 天成功率低于 `PROXYIP_MIN_SUCCESS_RATE_7D`
+
+第三步，过门槛的按有效延迟升序排：
+
+```
+有效延迟 = 0.5 × 本次 P50 + 0.5 × 历史平均延迟
+         + PROXYIP_JITTER_WEIGHT × 抖动
+         + (1 - 有效成功率) × PROXYIP_STABILITY_PENALTY_MS
+         + 采样缺口 × PROXYIP_PROBE_SAMPLE_DEFICIT_PENALTY_MS
+         + PROXYIP_THROUGHPUT_WEIGHT × 传 PROXYIP_THROUGHPUT_BYTES 的耗时
+```
+
+第四步，两级筛选补上真实吞吐。1400 个候选全部下载测速太贵，所以先用第一步的廉价 RTT 筛出 Top `PROXYIP_THROUGHPUT_TOP_N`（外加当前主 IP，它无论排多少都必须测），再对这个小池子经 ProxyIP 真实下载 `speed.cloudflare.com/__down`，记录 MB/s。单看 RTT 会选出「握手快但传输慢」的 IP，所以吞吐折算成传输耗时直接进有效延迟；没测到速的按 `PROXYIP_THROUGHPUT_UNKNOWN_MS` 计，排在所有测过速的后面。实测差异通常在 0.002–3.8 MB/s 之间，吞吐因此是排序的主导项。
+
+当前主 IP 还额外受 `PROXYIP_THROUGHPUT_MIN_MBPS` 约束：测到的吞吐低于它，连续 `PROXYIP_FAILOVER_THRESHOLD` 次就 failover。
+
+有效成功率来自 `docs/ip_history.json` 的滚动窗口。历史不足 `PROXYIP_MIN_HISTORY_CHECKS` 次时按 `PROXYIP_HISTORY_UNKNOWN_RATE` 收缩，新候选既不会白捡满分，也不会因为没历史被质量门槛直接判负。
+
+`docs/ip_history.json` 只保留 `PROXYIP_HISTORY_WINDOW` 次结果和 `PROXYIP_HISTORY_RETENTION_DAYS` 天内出现过的 IP，记录的是「验证通过且本机握手成功」，不受地区过滤和 ASN 截断影响。CI 必须把它一起提交，否则历史无法跨运行累积。吞吐另存 `mbps` / `mbps_at`，超过 `PROXYIP_THROUGHPUT_MAX_AGE_HOURS` 就不再作为历史兜底。
+
+### 本地探测叠加（阶段 4）
+
+GitHub Actions 是单点数据，「最快」只对美西有效。`PROXYIP_PROBE_ONLY=1` 让你在自己实际使用的机器上跑一次探测，产出 `docs/probe_local.json`，CI 读到后按权重并进排序：
+
+- RTT 按 `PROXYIP_LOCAL_PROBE_WEIGHT` 加权合并；抖动取两边更差的那个。
+- 本地探测补不上 CI 侧的握手时，用本地结果顶上，采样缺口按两边较大值算。
+- 吞吐按 `PROXYIP_THROUGHPUT_CI_WEIGHT`（CI）与 `PROXYIP_LOCAL_THROUGHPUT_WEIGHT`（本地）加权，本地默认更高，因为它才是你真实使用的网络。
+- 文件超过 `PROXYIP_LOCAL_PROBE_MAX_AGE_HOURS` 就整份丢弃，过期数据不会污染排序。
+
+```bash
+export PROXYIP_PROBE_ONLY=1
+python3 build_dataset.py          # 只写 docs/probe_local.json，不碰 state / history / ip_history
+git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
+```
+
+不提交 `docs/probe_local.json` 的话，CI 读不到，等于只有美西单点数据。该文件由本地运行负责提交，CI 的 `git add` 列表里没有它，不会被覆盖。
+
 常用环境变量：
 
 | 变量 | 默认值 | 说明 |
@@ -293,6 +353,31 @@ python3 scripts/auto_update.py
 | `PROXYIP_CURRENT_MIN_BOT_SCORE` | `80` | 当前主 IP 最低 bot score 门槛 |
 | `PROXYIP_CURRENT_MAX_LATENCY_MS` | `2500` | 当前主 IP 最大延迟门槛 |
 | `PROXYIP_SWITCH_COOLDOWN_HOURS` | `6` | 切换冷却时间，单位小时 |
+| `PROXYIP_PROBE_SAMPLES` | `3` | 每个候选的本地握手采样次数 |
+| `PROXYIP_PROBE_TIMEOUT` | `5` | 单次握手超时，单位秒 |
+| `PROXYIP_PROBE_MIN_SAMPLES` | `2` | 过门槛要求的最少有效样本数 |
+| `PROXYIP_PROBE_SAMPLE_DEFICIT_PENALTY_MS` | `2000` | 每缺 1 个有效样本折算的惩罚毫秒 |
+| `PROXYIP_MAX_JITTER_MS` | `500` | 过门槛允许的最大抖动 |
+| `PROXYIP_MIN_SUCCESS_RATE_7D` | `0.9` | 过门槛允许的最低 7 天成功率 |
+| `PROXYIP_MIN_HISTORY_CHECKS` | `6` | 成功率视为可信所需的最少历史次数 |
+| `PROXYIP_HISTORY_UNKNOWN_RATE` | `0.85` | 历史不足时的收缩成功率 |
+| `PROXYIP_HISTORY_WINDOW` | `56` | 每个 IP 保留的结果次数 |
+| `PROXYIP_HISTORY_RETENTION_DAYS` | `7` | 未被巡检到多少天后清理该 IP |
+| `PROXYIP_THROUGHPUT_TOP_N` | `30` | 廉价 RTT 筛出多少个候选做真实下载测速 |
+| `PROXYIP_THROUGHPUT_BYTES` | `10485760` | 测速下载的字节数 |
+| `PROXYIP_THROUGHPUT_TIMEOUT` | `12` | 单个 IP 吞吐测试总超时，单位秒 |
+| `PROXYIP_THROUGHPUT_WORKERS` | `1` | 吞吐并发数；共享带宽会互相拖慢，默认串行保证可比性 |
+| `PROXYIP_THROUGHPUT_ABORT_S` | `4` | 采样满多少秒后仍低于门槛就提前放弃 |
+| `PROXYIP_THROUGHPUT_ABORT_MBPS` | `0.4` | 提前放弃的吞吐门槛，单位 MB/s |
+| `PROXYIP_THROUGHPUT_WEIGHT` | `1.0` | 传输耗时在有效延迟里的权重 |
+| `PROXYIP_THROUGHPUT_UNKNOWN_MS` | `20000` | 未测速时按多少毫秒计，保证排在测过速的后面 |
+| `PROXYIP_THROUGHPUT_MIN_MBPS` | `1.0` | 当前主 IP 的最低吞吐门槛，单位 MB/s |
+| `PROXYIP_THROUGHPUT_MAX_AGE_HOURS` | `72` | 历史吞吐多久后不再兜底 |
+| `PROXYIP_THROUGHPUT_CI_WEIGHT` | `0.4` | 吞吐合并时 CI 实测的权重 |
+| `PROXYIP_PROBE_ONLY` | `0` | 置 `1` 只在本机探测，产出 `docs/probe_local.json` |
+| `PROXYIP_LOCAL_PROBE_WEIGHT` | `0.6` | RTT 合并时本机数据的权重 |
+| `PROXYIP_LOCAL_THROUGHPUT_WEIGHT` | `0.6` | 吞吐合并时本机数据的权重 |
+| `PROXYIP_LOCAL_PROBE_MAX_AGE_HOURS` | `168` | `docs/probe_local.json` 超过多少小时就不再采信 |
 
 ## 安全与反爬
 

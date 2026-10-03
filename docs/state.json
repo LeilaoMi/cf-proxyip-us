@@ -1,13 +1,14 @@
 {
-  "current_ip": "43.170.25.96",
+  "current_ip": "51.81.209.10",
   "status": "healthy",
   "failure_count": 0,
-  "first_selected_at": "2026-05-31T15:11:50.428948+00:00",
-  "last_success_at": "2026-10-03T16:29:36.398364+00:00",
-  "last_checked_at": "2026-10-03T16:29:36.398364+00:00",
+  "first_selected_at": "2026-10-03T20:18:58.259569+00:00",
+  "last_switch_at": "2026-10-03T20:18:58.259569+00:00",
+  "last_success_at": "2026-10-03T20:37:17.625653+00:00",
+  "last_checked_at": "2026-10-03T20:37:17.625653+00:00",
   "last_error": null,
   "failover_threshold": 2,
-  "previous_ip": null,
+  "previous_ip": "43.170.25.96",
   "quality_threshold": {
     "min_bot_score": 80,
     "max_latency_ms": 2500

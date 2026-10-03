@@ -2,26 +2,26 @@
   {
     "type": "A",
     "name": "proxyip",
-    "content": "43.170.25.96",
+    "content": "51.81.209.10",
     "proxied": false,
     "ttl": 300,
     "risk": {
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1121,
+      "penalty": 12752.622552858262,
       "grade": "low",
       "verification_method": "cmliu",
-      "asn": 139341,
-      "as_organization": "16 COLLYER QUAY # 18-29 INCOME AT RAFFLES",
-      "exit_ip": "43.175.170.100",
+      "asn": 16276,
+      "as_organization": "OVH US LLC",
+      "exit_ip": "51.81.209.10",
       "country": "US",
-      "city": "Ashburn",
-      "candidate_colo": "IAD",
-      "exit_colo": "IAD",
-      "colo": "IAD"
+      "city": "Portland",
+      "candidate_colo": "NRT",
+      "exit_colo": "SEA",
+      "colo": "SEA"
     },
-    "latency_ms": 121,
+    "latency_ms": 2028,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }

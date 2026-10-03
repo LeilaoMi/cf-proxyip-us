@@ -1,5 +1,29 @@
 [
   {
+    "switched_at": "2026-10-03T20:18:58.259569+00:00",
+    "from": "43.170.25.96",
+    "to": "51.81.209.10",
+    "reason": "current_failed_threshold",
+    "failure_count": 2,
+    "new_score": 994610,
+    "new_risk": {
+      "cf_bot_score": 99,
+      "corporate_proxy": false,
+      "verified_bot": false,
+      "penalty": 5390.130130738827,
+      "grade": "low",
+      "verification_method": "cmliu",
+      "asn": 16276,
+      "as_organization": "OVH US LLC",
+      "exit_ip": "51.81.209.10",
+      "country": "US",
+      "city": "Portland",
+      "candidate_colo": "NRT",
+      "exit_colo": "SEA",
+      "colo": "SEA"
+    }
+  },
+  {
     "switched_at": "2026-05-31T15:11:50.428948+00:00",
     "from": null,
     "to": "43.170.25.96",

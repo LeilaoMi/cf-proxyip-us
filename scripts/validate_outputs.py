@@ -65,6 +65,29 @@ def main() -> None:
     require(len(valid_ips) == len(all_ips), "full.json valid_ips length does not match all.txt")
     require([item.get("ip") for item in valid_ips] == all_ips, "full.json valid_ips order does not match all.txt")
 
+    require("latency_metric" in summary, "full.json summary is missing latency_metric")
+    require(isinstance(summary.get("probe"), dict), "full.json summary is missing probe settings")
+    require(isinstance(summary.get("stability_history"), dict), "full.json summary is missing stability_history settings")
+    require(isinstance(summary.get("throughput"), dict), "full.json summary is missing throughput settings")
+    require(isinstance(summary.get("local_probe"), dict), "full.json summary is missing local_probe settings")
+
+    missing_probe = [
+        item.get("ip") for item in valid_ips
+        if "rtt_p50_ms" not in item or "rtt_ok" not in item or "stability" not in item
+        or not isinstance(item.get("latency_ms"), int)
+        or "eff_throughput_mbps" not in item
+    ]
+    require(not missing_probe, f"valid_ips entries missing probe/stability/throughput fields: {missing_probe[:5]}")
+
+    probe_local = DOCS / "probe_local.json"
+    if probe_local.exists():
+        payload = json.loads(probe_local.read_text(encoding="utf-8"))
+        require(isinstance(payload, dict), "probe_local.json must be an object")
+        require(bool(payload.get("probed_at")), "probe_local.json is missing probed_at")
+        require(isinstance(payload.get("rtt"), dict), "probe_local.json is missing rtt map")
+        require(isinstance(payload.get("throughput"), dict), "probe_local.json is missing throughput map")
+        require(len(payload["rtt"]) > 0, "probe_local.json rtt map is empty")
+
     require(state.get("current_ip") == current, "state.json current_ip does not match current.txt")
     require(current_json.get("current", {}).get("ip") == current, "current.json current IP does not match current.txt")
 

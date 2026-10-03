@@ -125,7 +125,7 @@ def main() -> None:
     if changed:
         run(["git", "config", "user.name", "github-actions[bot]"])
         run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
-        run(["git", "add", "docs/all.txt", "docs/base64.txt", "docs/best.txt", "docs/current.json", "docs/current.txt", "docs/dns-records.json", "docs/full.json", "docs/history.json", "docs/kv-manifest.json", "docs/standby.txt", "docs/state.json", "docs/top5.txt", "docs/us.txt", "docs/v2ray.txt"])
+        run(["git", "add", "docs/all.txt", "docs/base64.txt", "docs/best.txt", "docs/current.json", "docs/current.txt", "docs/dns-records.json", "docs/full.json", "docs/history.json", "docs/ip_history.json", "docs/kv-manifest.json", "docs/standby.txt", "docs/state.json", "docs/top5.txt", "docs/us.txt", "docs/v2ray.txt"])
         valid_count = len([x for x in Path("docs/all.txt").read_text().splitlines() if x.strip()])
         message = f"Auto refresh ProxyIP data: current={after} valid={valid_count}"
         commit = run(["git", "commit", "-m", message], check=False)
