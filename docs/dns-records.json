@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 4065.3654386512644,
+      "penalty": 4014.1252434900234,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 16276,
@@ -21,7 +21,7 @@
       "exit_colo": "SEA",
       "colo": "SEA"
     },
-    "latency_ms": 948,
+    "latency_ms": 878,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
