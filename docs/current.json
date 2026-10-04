@@ -1,21 +1,21 @@
 {
   "current": {
     "ip": "51.81.209.10",
-    "latency_ms": 878,
-    "rtt_p50_ms": 878,
+    "latency_ms": 827,
+    "rtt_p50_ms": 827,
     "rtt_jitter_ms": 533,
     "rtt_samples": 3,
     "rtt_ok": true,
-    "api_latency_ms": 502,
-    "throughput_mbps": 11.841,
-    "eff_throughput_mbps": 5.914,
+    "api_latency_ms": 701,
+    "throughput_mbps": 14.116,
+    "eff_throughput_mbps": 6.824,
     "throughput_source": "measured",
     "local_rtt_p50_ms": 1234,
     "stability": {
-      "check_count": 6,
+      "check_count": 7,
       "success_rate_7d": 1.0,
       "effective_success_rate": 1.0,
-      "avg_latency_ms_recent": 1472.17,
+      "avg_latency_ms_recent": 1387.29,
       "gate_ok": true,
       "cold_start": false
     },
@@ -27,7 +27,7 @@
     "source_domains": [],
     "source_type": null,
     "source_count": 1,
-    "stable_score": 995986,
+    "stable_score": 996290,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -39,9 +39,9 @@
       "as_organization": "OVH US LLC",
       "country": "US",
       "city": "Portland",
-      "candidate_colo": "ORD",
+      "candidate_colo": "LAX",
       "exit_colo": "SEA",
-      "penalty": 4014.1252434900234
+      "penalty": 3709.7452344665885
     }
   },
   "state": {
@@ -50,8 +50,8 @@
     "failure_count": 0,
     "first_selected_at": "2026-10-03T20:18:58.259569+00:00",
     "last_switch_at": "2026-10-03T20:18:58.259569+00:00",
-    "last_success_at": "2026-10-04T06:04:20.751170+00:00",
-    "last_checked_at": "2026-10-04T06:04:20.751170+00:00",
+    "last_success_at": "2026-10-04T12:32:33.975660+00:00",
+    "last_checked_at": "2026-10-04T12:32:33.975660+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": "43.170.25.96",
