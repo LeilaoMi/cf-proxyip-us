@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 4679.714435774309,
+      "penalty": 3791.2921885299934,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 16276,
@@ -17,11 +17,11 @@
       "exit_ip": "51.81.209.10",
       "country": "US",
       "city": "Portland",
-      "candidate_colo": "IAD",
+      "candidate_colo": "ORD",
       "exit_colo": "SEA",
       "colo": "SEA"
     },
-    "latency_ms": 875,
+    "latency_ms": 896,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
