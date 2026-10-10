@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 3564.300078412546,
+      "penalty": 2987.10373485088,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 16276,
@@ -17,7 +17,7 @@
       "exit_ip": "51.81.209.10",
       "country": "US",
       "city": "Hillsboro",
-      "candidate_colo": "LAX",
+      "candidate_colo": "SJC",
       "exit_colo": "SEA",
       "colo": "SEA"
     },
