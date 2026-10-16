@@ -9,7 +9,7 @@
       "cf_bot_score": 99,
       "corporate_proxy": false,
       "verified_bot": false,
-      "penalty": 1364.2867161716172,
+      "penalty": 1116.9075027085592,
       "grade": "low",
       "verification_method": "cmliu",
       "asn": 16276,
@@ -17,11 +17,11 @@
       "exit_ip": "51.81.209.10",
       "country": "US",
       "city": "Hillsboro",
-      "candidate_colo": "ORD",
+      "candidate_colo": "LAX",
       "exit_colo": "SEA",
       "colo": "SEA"
     },
-    "latency_ms": 216,
+    "latency_ms": 166,
     "port": 443,
     "selection_reason": "kept_current_ip_still_healthy"
   }
