@@ -439,7 +439,8 @@ th{font-weight:600;background:#f9fafb}
 </head>
 <body>
 <h1>ProxyIP US IPv4</h1>
-<p class="muted">只收录 <code>zip.cm.edu.kg/all.txt</code> 中标记 <code>#US</code>、端口 <code>443</code>、且 cmliu 检测 <code>supports_ipv4=true</code> 的结果。</p>
+<p class="muted">从 zip.cm.edu.kg、CMLiussss 等多个第三方源收集候选，验证出口为美国 IPv4，再按 RTT、7 天稳定性和下载吞吐排序，选出 1 个稳定主 IP。</p>
+<p>客户端 ProxyIP 填写：<code>proxyip.leilaomi.cc.cd</code>（不要填本页域名）</p>
 
 <div class="status-row">
   <span class="status-chip ok">✓ 通过验证: <b>${escapeHtml(s.cmliu_ipv4_valid ?? valid.length)}</b></span>
@@ -449,7 +450,7 @@ th{font-weight:600;background:#f9fafb}
   <span class="status-chip info">数据源: <b>${sourceCount}</b></span>
   <span class="status-chip info">平均延迟: <b>${avgLatency != null ? escapeHtml(avgLatency) : "N/A"}</b></span>
 </div>
-<p class="muted">上次更新: ${escapeHtml(checkedAt)}${freshnessMin !== null ? ` (${freshnessMin}m ago)` : ''}${freshnessMin !== null && freshnessMin > 240 ? ' ⚠️' : ''}</p>
+<p class="muted">上次更新: ${escapeHtml(checkedAt)}${freshnessMin !== null ? ` (${freshnessMin}m ago)` : ''}${freshnessMin !== null && freshnessMin > STALE_WARN_MS / 60000 ? ' ⚠️ 数据已超过 6 小时' : ''}</p>
 
 <h2>当前稳定主 IP</h2>
 <div class="current-ip">${escapeHtml(current || "none")}</div>
@@ -486,7 +487,7 @@ th{font-weight:600;background:#f9fafb}
 <tbody>${rows}</tbody>
 </table>
 
-<p class="muted" style="margin-top:40px">由 Zo Computer 驱动</p>
+<p class="muted" style="margin-top:40px">数据由 GitHub Actions 定时更新 · <a href="https://github.com/LeilaoMi/cf-proxyip-us">源码与说明</a></p>
 
 <script>
 async function fetchToken() {
