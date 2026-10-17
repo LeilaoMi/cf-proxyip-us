@@ -85,7 +85,12 @@ def main() -> None:
     assert_true(len(dns_records) == 1 and dns_records[0].get("content") == current, "dns-records.json must contain exactly one current IP")
 
     country = (current_json.get("current", {}).get("risk", {}).get("country") or "").upper()
-    assert_true(country in TARGET_COUNTRIES, f"current IP country {country!r} is outside target countries {sorted(TARGET_COUNTRIES)}")
+    degraded = state.get("status") == "degraded" and int(state.get("failure_count") or 0) < int(state.get("failover_threshold") or 2)
+    if degraded and not country:
+        # 主 IP 本轮验证失败但未达 failover 阈值：允许通过，让 failure_count 被提交，下一轮才能真正切换。
+        print(f"WARN: current IP is degraded (failure_count={state.get('failure_count')}); country check skipped", flush=True)
+    else:
+        assert_true(country in TARGET_COUNTRIES, f"current IP country {country!r} is outside target countries {sorted(TARGET_COUNTRIES)}")
 
     standby = full.get("standby", [])
     bad_standby = [(x.get("ip"), x.get("risk", {}).get("country")) for x in standby if (x.get("risk", {}).get("country") or "").upper() not in TARGET_COUNTRIES]
