@@ -1,359 +1,126 @@
 # cf-proxyip-us
 
-`cf-proxyip-us` 是一个面向 Cloudflare Worker 的 ProxyIP 自动维护项目。它会定时收集、检测、排序美国方向的 ProxyIP 候选，选择 1 个稳定主 IP 写入 DNS-only A 记录，并通过 Worker + KV 分发当前 IP、备用池、完整报告和订阅数据。
+[![ProxyIP Auto Update](https://github.com/LeilaoMi/cf-proxyip-us/actions/workflows/proxyip-auto-update.yml/badge.svg)](https://github.com/LeilaoMi/cf-proxyip-us/actions/workflows/proxyip-auto-update.yml)
 
-本文描述的是仓库当前实际实现：候选按「本地 RTT → 滚动稳定性历史 → 真实下载吞吐 → 本地探测叠加」四个阶段排序，KV 同步走 Cloudflare REST API。动态数据一律以线上接口和 `docs/` 为准，本文不写死候选数量、延迟或当前 IP。
+自动维护一个**美国出口**的 Cloudflare ProxyIP：GitHub Actions 定时收集第三方 ProxyIP 候选、验证、测速排序，选出 **1 个稳定主 IP** 写进 DNS-only 域名 `proxyip.leilaomi.cc.cd`，同时用 Worker + KV 在 `list.leilaomi.cc.cd` 分发备用池和完整报告。
 
-目录：
+> 本文只写机制和默认值，不写死当前 IP、候选数量或延迟。实时数据看 `/health`、`docs/` 或 Actions 日志。
 
-- [当前线上地址](#当前线上地址)
-- [项目实际架构](#项目实际架构)
-- [仓库结构](#仓库结构)
-- [数据产物](#数据产物)
-- [认证方式](#认证方式)
-- [客户端使用方式](#客户端使用方式)
-- [Cloudflare 配置](#cloudflare-配置)
-- [GitHub Actions 自动巡检](#github-actions-自动巡检)
-- [KV 同步方式](#kv-同步方式)
-- [DNS 同步方式](#dns-同步方式)
-- [本地重新生成数据](#本地重新生成数据)
-- [候选源策略](#候选源策略)
-- [Failover 策略](#failover-策略)
-- [排序与测速：四个阶段](#排序与测速四个阶段)
-- [环境变量](#环境变量)
-- [安全与反爬](#安全与反爬)
-- [排障指南](#排障指南)
-- [历史与归档](#历史与归档)
+**目录**：[快速使用](#快速使用) · [接口](#接口) · [认证](#认证) · [工作原理](#工作原理) · [候选来源](#候选来源) · [候选预算](#候选预算) · [验证](#验证) · [排序](#排序与测速四个阶段) · [主-ip-与-failover](#主-ip-与-failover) · [自动化与部署](#自动化与部署) · [配置](#配置) · [本地运行](#本地运行) · [已知限制](#已知限制) · [排障](#排障指南) · [仓库结构](#仓库结构)
 
-## 当前线上地址
+## 快速使用
 
-| 用途 | 地址 | 说明 |
-|---|---|---|
-| Worker 分发首页 | `https://list.leilaomi.cc.cd/` | 首页、认证入口、API 分发入口 |
-| 实际 ProxyIP 域名 | `proxyip.leilaomi.cc.cd` | DNS-only / 灰云，永远只指向 1 个当前主 IP |
-| 当前主 IP | `https://list.leilaomi.cc.cd/current.txt` | 客户端实际使用的主 ProxyIP |
-| 当前主 IP 详情 | `https://list.leilaomi.cc.cd/current.json` | 当前主 IP、质量、状态信息 |
-| 备用候选 | `https://list.leilaomi.cc.cd/standby.txt` | 主 IP 失效后的备用池 |
-| 推荐 Top 5 | `https://list.leilaomi.cc.cd/top5.txt` | 当前主 IP + 前 4 个备用候选 |
-| 全量列表 | `https://list.leilaomi.cc.cd/all.txt` | 通过检测的候选 IP |
-| US 列表 | `https://list.leilaomi.cc.cd/us.txt` | 当前项目默认目标地区列表 |
-| Top 20 | `https://list.leilaomi.cc.cd/best.txt` | 排名前 20 的候选 |
-| 完整报告 | `https://list.leilaomi.cc.cd/full.json` | 检测摘要与公开报告 |
-| V2Ray Base64 | `https://list.leilaomi.cc.cd/v2ray.txt` | Base64 编码 IP 列表，不是完整节点订阅 |
-| 获取 Token | `https://list.leilaomi.cc.cd/token` | 需先访问首页拿 Cookie |
-| 健康检查 | `https://list.leilaomi.cc.cd/health` | 最小公开健康状态 |
-| 详细健康检查 | `https://list.leilaomi.cc.cd/health/full` | 需要 Cookie 或 HMAC Token |
-| 统计数据 | `https://list.leilaomi.cc.cd/stats` | 需要 Cookie 或 HMAC Token |
-
-## 项目实际架构
-
-```text
-GitHub Actions（每 3 小时，cron 17 */3 * * * UTC）
-  ├─ build_dataset.py                 # 收集 -> 验证 -> 四阶段排序 -> failover -> 写 docs/
-  │    ├─ check_cmliu / 直连 HTTPS      # 第三方验证出口、地区、bot score
-  │    ├─ probe_rtt                     # 本机 TCP+TLS 多次采样 -> P50 + 抖动
-  │    ├─ merge_local_probe             # 合并 docs/probe_local.json（存在且未过期才用）
-  │    ├─ probe_throughput              # 廉价 RTT 筛出 Top N 后真实下载测速
-  │    └─ update_ip_history             # 滚动 7 天历史写回 docs/ip_history.json
-  ├─ scripts/validate_outputs.py      # 校验 docs 输出一致性
-  ├─ python3 -m unittest discover -s tests
-  ├─ scripts/auto_update.py           # PROXYIP_SKIP_GENERATE=1：同步 + 部署 + 线上验证
-  │    ├─ scripts/sync_kv.py            # Cloudflare REST API 写入 KV
-  │    ├─ scripts/sync_dns.py           # Cloudflare REST API 同步 DNS-only A 记录
-  │    ├─ wrangler deploy               # 部署 Worker
-  │    └─ scripts/audit.py              # 运行结果审计
-  └─ 按白名单提交 docs/ 数据快照
-
-本机（可选，PROXYIP_PROBE_ONLY=1）
-  └─ build_dataset.py -> docs/probe_local.json -> 提交仓库 -> CI 按权重合并
-
-Cloudflare
-  ├─ Worker: cf-proxyip-us           # 分发页面、API、认证与缓存
-  ├─ KV Namespace                    # 保存 current/all/full/top5 等数据
-  └─ DNS-only A: proxyip.leilaomi.cc.cd -> 当前主 IP
-```
-
-关键点：
-
-- Worker 只负责分发、认证、读取 KV、返回 API，不负责在线扫描 IP。
-- 候选收集、检测、四阶段排序、failover 全部在 GitHub Actions 里完成。
-- 本机探测只是可选的加权数据源；`docs/probe_local.json` 缺失时 CI 照常运行。
-- DNS 始终只写入 1 条 DNS-only A 记录，避免出口频繁跳变。
-- KV 同步使用 Cloudflare REST API，不再使用 `wrangler kv key put`。
-- Worker 部署仍使用 `wrangler deploy`。
-
-## 仓库结构
-
-| 路径 | 作用 |
-|---|---|
-| `build_dataset.py` | 候选收集、验证、四阶段探测排序、failover、生成 `docs/` |
-| `worker.js` | Worker 路由、认证、API、KV 读取、公开状态页 |
-| `wrangler.toml` | Worker、KV binding、route 配置 |
-| `scripts/auto_update.py` | CI 自动流程：同步 KV/DNS、部署 Worker、线上验证、审计、提交 |
-| `scripts/sync_kv.py` | 通过 Cloudflare REST API 写 KV |
-| `scripts/sync_dns.py` | 通过 Cloudflare REST API 同步 DNS-only A 记录 |
-| `scripts/validate_outputs.py` | `docs/` 输出一致性校验 |
-| `scripts/audit.py` | 部署后审计 |
-| `tests/` | 单元测试：排序逻辑、历史窗口、输出校验、Worker 静态检查 |
-| `.github/workflows/proxyip-auto-update.yml` | GitHub Actions 定时入口 |
-| `docs/` | 每次巡检的可审计数据快照 |
-| `docs/operations.md` | 运行与部署说明、所需权限、排障 |
-| `docs/archive/` | 2026-06 的审计报告与阶段计划，已落地归档 |
-| `AGENTS.md` | 维护约定、必跑验证命令、线上操作禁令 |
-
-## 数据产物
-
-仓库 `docs/` 保留每次自动巡检后的可审计快照。
-
-| 文件 | 说明 |
-|---|---|
-| `docs/current.txt` | 当前稳定主 IP，供 `proxyip.leilaomi.cc.cd` 使用 |
-| `docs/current.json` | 当前主 IP 的详细状态 |
-| `docs/state.json` | failover 状态、连续失败次数、最近成功时间 |
-| `docs/history.json` | 主 IP 切换历史 |
-| `docs/ip_history.json` | 每个 IP 的滚动稳定性窗口，排序和主 IP 质量判定的输入 |
-| `docs/probe_local.json` | `PROXYIP_PROBE_ONLY=1` 在本机产出的 RTT + 吞吐数据，CI 按权重合并；只由本地运行提交 |
-| `docs/standby.txt` | 备用候选池 |
-| `docs/top5.txt` | 当前主 IP + 前 4 个备用候选 |
-| `docs/all.txt` | 通过 IPv4 与目标地区检测的全部候选 |
-| `docs/us.txt` | 当前目标地区 US 列表 |
-| `docs/best.txt` | 排名前 20 的候选 |
-| `docs/dns-records.json` | 期望同步到 Cloudflare 的 DNS A 记录 |
-| `docs/full.json` | 完整公开报告，已剔除 debug 用的 `all_results` 与 `throughput_by_ip` |
-| `docs/kv-manifest.json` | KV key 与本地文件映射 |
-| `docs/v2ray.txt` | Base64 编码 IP 列表 |
-| `docs/operations.md` | 运行与部署说明、所需权限、排障 |
-| `docs/archive/` | 2026-06 的历史审计与阶段计划，已落地归档 |
-
-以下文件由脚本生成但不进仓库（已在 `.gitignore`）：
-
-| 文件 | 来源 | 说明 |
-|---|---|---|
-| `docs/full.slim.json` | `scripts/sync_kv.py` | 上传 KV `result_json` 前生成的瘦身版，剔除 `all_results` |
-| `result.json`（仓库根） | `build_dataset.py` | 含 `all_results` 的完整调试输出 |
-
-动态数据以线上接口和 `docs/` 文件为准，README 不写死候选数量、延迟、当前 IP。
-
-## 认证方式
-
-数据接口默认需要认证，支持 Cookie 和 HMAC Token。
-
-### 1. Cookie 认证
-
-浏览器访问首页会自动设置：
-
-```text
-proxyip_access=ok
-```
-
-有效期 8 小时。
-
-### 2. HMAC Token 认证
-
-推荐程序化访问使用 Header，不建议把 token 放 URL。
-
-```bash
-# 1. 访问首页获取 Cookie
-curl -c cookies.txt https://list.leilaomi.cc.cd/
-
-# 2. 使用 Cookie 获取 HMAC Token
-curl -b cookies.txt https://list.leilaomi.cc.cd/token
-
-# 3. 使用 Bearer Token 访问数据接口
-curl -H "Authorization: Bearer <HMAC_TOKEN>" https://list.leilaomi.cc.cd/all.txt
-```
-
-Token 格式：
-
-```text
-YYYYMMDD-HMAC-SHA256-Hex
-```
-
-Worker 端必须配置 `PROXYIP_SECRET`。它应与 GitHub Actions 的 `PROXYIP_HMAC_SECRET` 保持一致。
-
-## 客户端使用方式
-
-客户端、面板或 VLESS Worker 里的 ProxyIP 字段填写：
+在 edgetunnel / VLESS Worker 等客户端的 ProxyIP 字段填写：
 
 ```text
 proxyip.leilaomi.cc.cd
 ```
 
-不要填写 `list.leilaomi.cc.cd`。
-
-区别：
-
-| 域名 | 用途 |
+| 域名 | 作用 |
 |---|---|
-| `proxyip.leilaomi.cc.cd` | 实际 ProxyIP 出口域名，DNS-only 单 A 记录 |
-| `list.leilaomi.cc.cd` | Worker 数据分发域名，提供 API、报告、Token |
+| `proxyip.leilaomi.cc.cd` | **实际使用的 ProxyIP**。DNS-only（灰云）单 A 记录，永远只指向 1 个主 IP，TTL 300 |
+| `list.leilaomi.cc.cd` | Worker 数据分发：首页、备用池、报告、Token。**不要**填进 ProxyIP 字段 |
 
-## Cloudflare 配置
+注意：ProxyIP 只在目标网站托管在 Cloudflare 上时才会被用到；访问非 CF 站点时流量直接从你的 Worker 出口发出，与本项目无关。
 
-当前实际配置：
+## 接口
 
-| 配置项 | 当前值 / 说明 |
+除 `/`、`/health`、`/robots.txt` 外都需要[认证](#认证)。
+
+| 路径 | 内容 |
 |---|---|
-| Worker 名称 | `cf-proxyip-us` |
-| Worker 配置 | `wrangler.toml` |
-| Worker 分发域名 | `list.leilaomi.cc.cd` |
-| ProxyIP DNS-only 域名 | `proxyip.leilaomi.cc.cd` |
-| Cloudflare Account ID | 通过 GitHub Actions 环境变量 `CLOUDFLARE_ACCOUNT_ID` 传入 |
-| Cloudflare API Token | GitHub Secret：`CLOUDFLARE_API_TOKEN` |
-| HMAC Secret | GitHub Secret：`PROXYIP_HMAC_SECRET`；Worker Secret：`PROXYIP_SECRET` |
+| `/` | 状态页，同时签发访问 Cookie |
+| `/health` | 公开的最小健康信息：`ok`、`stale`、`age_minutes`、`count`、`checked_at` |
+| `/health/full` | 详细健康信息 |
+| `/current.txt` | 当前主 IP（与 DNS 一致） |
+| `/current.json` | 主 IP 详情 + failover 状态 |
+| `/standby.txt` | 备用池，最多 10 个，同一 ASN 最多 2 个 |
+| `/top5.txt` | 主 IP + 前 4 个备用，同一 ASN 最多 1 个 |
+| `/best.txt` | 排名前 20 |
+| `/all.txt`、`/us.txt` | 全部通过检测的 US 候选（两者相同） |
+| `/v2ray.txt`、`/base64.txt` | `all.txt` 的 Base64 编码，**不是**节点订阅 |
+| `/full.json` | 完整报告（来源统计、每个 IP 的质量与测速） |
+| `/state.json`、`/history.json` | failover 状态、主 IP 切换历史 |
+| `/stats` | ASN / colo / 延迟分布 |
+| `/token` | 当天的 HMAC Token（需 Cookie） |
 
-> 不要把 Cloudflare API Token 明文写入 README、workflow、脚本或提交历史。只允许放在 GitHub Secrets / Cloudflare Secrets 中。
+数据新鲜度：`/health` 在数据超过 6 小时时 `stale=true`，超过 12 小时 `ok=false`（HTTP 状态码仍是 200）。
 
-### 必需 GitHub Secrets
+## 认证
 
-| Secret | 用途 |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | GitHub Actions 调用 Cloudflare REST API、DNS API 和 Wrangler 部署 |
-| `PROXYIP_HMAC_SECRET` | GitHub Actions 生成 HMAC Token，用于线上验证 |
+两种方式，任一通过即可：
 
-### 必需 Worker Secret
+1. **签名 Cookie**：浏览器访问首页后获得 `proxyip_access=<过期时间>.<HMAC>`，有效期 8 小时。Worker 精确解析 Cookie 名并校验签名和过期时间，手写的 Cookie 无效。
+2. **HMAC Token**：`YYYYMMDD-<HMAC-SHA256(secret, YYYYMMDD) hex>`，按 UTC 日期生成；当天和前一天的 Token 都有效（UTC 零点有 24 小时宽限期），使用常量时间比较。
 
-| Secret | 用途 |
-|---|---|
-| `PROXYIP_SECRET` | Worker 端验证 HMAC Token，值应与 `PROXYIP_HMAC_SECRET` 一致 |
-
-### GitHub Actions 环境变量
-
-`.github/workflows/proxyip-auto-update.yml` 当前传入：
-
-```yaml
-env:
-  CLOUDFLARE_ACCOUNT_ID: <Cloudflare Account ID>
-  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  PROXYIP_HMAC_SECRET: ${{ secrets.PROXYIP_HMAC_SECRET }}
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```bash
+curl -c c.txt -A Mozilla/5.0 https://list.leilaomi.cc.cd/                     # 拿 Cookie
+curl -b c.txt -A Mozilla/5.0 https://list.leilaomi.cc.cd/token                # 拿 Token
+curl -H "Authorization: Bearer <TOKEN>" https://list.leilaomi.cc.cd/all.txt   # 程序化访问
 ```
 
-`CLOUDFLARE_ACCOUNT_ID` 是账号 ID，不是密钥；`CLOUDFLARE_API_TOKEN` 必须只放 Secret。
+- 常见 bot、curl、wget、python-requests 等 UA 在没有合法 Token 时直接 403（Cookie 也不行），所以脚本请用 Bearer Token。
+- Token 也可以用 `?t=<TOKEN>` 传，但不推荐。
+- Worker Secret `PROXYIP_SECRET` 未配置时不签发 Cookie，只能使用 `ALLOW_LEGACY_DATE_TOKEN=1` 的旧日期 Token（默认关闭）。
 
-## GitHub Actions 自动巡检
+> **这只是防爬，不是保密。** 任何人打开首页都能拿到 Cookie，而且同样的数据就在本公开仓库的 `docs/` 里。需要真正的访问控制，请用 Cloudflare Access 或把仓库设为私有。
 
-自动化入口：
+## 工作原理
 
 ```text
-.github/workflows/proxyip-auto-update.yml
+GitHub Actions（cron 17 */3 * * * UTC，也可手动触发）
+ │
+ ├─ build_dataset.py
+ │   ├─ ① 收集      文本源 + 域名源 + allowlist + 当前 DNS IP，剔除 Cloudflare 官方段和 denylist
+ │   ├─ ② 预算      按优先级取前 PROXYIP_MAX_CANDIDATES（默认 1400）
+ │   ├─ ③ 验证      api.090227.xyz/check：出口 IPv4、国家、ASN、colo、bot score
+ │   ├─ ④ 测速排序  本机 TCP+TLS RTT → 7 天稳定性 → 前 30 个下载 10MB 测吞吐 → 叠加本地探测
+ │   ├─ ⑤ 过滤      只留目标国家（默认 US），同一 ASN 最多 10 个（主 IP 永远保留）
+ │   ├─ ⑥ 选主      主 IP 健康就保留，连续失败才 failover
+ │   └─ ⑦ 输出      docs/*.txt / *.json、ip_history.json
+ ├─ validate_outputs.py + unittest
+ └─ scripts/auto_update.py
+     ├─ sync_kv.py        Cloudflare REST API 写 13 个 KV key
+     ├─ sync_dns.py       Cloudflare REST API 把 A 记录改成主 IP
+     ├─ wrangler deploy   每次运行都会部署（不管 worker.js 有没有改动）
+     ├─ 线上验证 + audit.py
+     └─ git commit/push docs/ 数据快照
+
+Cloudflare：Worker cf-proxyip-us（只读 KV 分发，不做扫描）· KV PROXYIP_KV · DNS-only A proxyip.leilaomi.cc.cd
 ```
 
-触发方式：
+## 候选来源
 
-- 定时：每 3 小时执行一次，Cron 为 `17 */3 * * *` UTC。
-- 手动：GitHub 仓库 → Actions → ProxyIP Auto Update → Run workflow。
+只收第三方中转 ProxyIP，下载 `https://www.cloudflare.com/ips-v4` 后剔除 Cloudflare 自身的 IP 段。
 
-执行流程（job 超时 45 分钟）：
+| 来源 | 类型 | 说明 |
+|---|---|---|
+| `zip.cm.edu.kg/all.txt` | 文本 | 只取标记 `#US`、端口 443 的行，候选主力 |
+| `ProxyIP.US.CMLiussss.net` | 域名 A 记录 | 带 US 地区提示 |
+| `ProxyIP.{SG,JP,HK,KR,DE,SE,NL,FI,GB}.CMLiussss.net` | 域名 | 地区不在 `PROXYIP_TARGET_COUNTRIES` 内时**直接跳过**，不占检测预算 |
+| `cdn.xn--b6gac.eu.org`、`cdn-all.xn--b6gac.eu.org` | 域名 | 没有地区信息 |
+| `edgetunnel.anycast.eu.org`、`ts.hpc.tw`、`bestproxy.onecf.eu.org` | 域名 | 保留在配置里，但近期没有 A 记录，`full.json` 的来源统计会记 `no A record` |
+| `allowlist.txt` / `denylist.txt` | 手动 | 临时加入 / 排除，格式 `1.2.3.4`、`1.2.3.4:443`、`1.2.3.4:443#US` |
+| 当前 DNS 主 IP | 自动 | 永远加入候选，保证主 IP 每轮都被检测 |
 
-1. Checkout 仓库完整历史。
-2. 安装 Node 20。workflow 写的是 `node-version: "20"`，但 GitHub 托管 runner 已弃用 Node 20，可能提示被强制升到更高版本；只要 `wrangler@4` 装得上即可。
-3. 安装 `wrangler@4`。
-4. 语法检查：
-   - `python3 -m py_compile build_dataset.py scripts/*.py`
-   - `node --check worker.js`
-5. 生成、校验和测试输出：
-   - `python3 build_dataset.py`
-   - `python3 scripts/validate_outputs.py`
-   - `python3 -m unittest discover -s tests`
-6. 执行完整自动更新：
-   - `python3 scripts/auto_update.py`（带 `PROXYIP_SKIP_GENERATE=1`，跳过上一步已做过的生成）
-7. 自动同步 KV、DNS、部署 Worker、线上验证、必要时提交 `docs/` 数据快照。
+每个来源的条数、接受数和错误都记录在 `full.json` 的 `summary.sources`。
 
-## KV 同步方式
+## 候选预算
 
-当前 `scripts/sync_kv.py` 使用 Cloudflare REST API 写 KV：
+候选总数通常超过 `PROXYIP_MAX_CANDIDATES`（默认 1400），超出部分按以下优先级截断：
 
-```text
-PUT /client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/{key}
-```
+1. 当前主 IP
+2. 近 8 次检测内成功过的 IP（来自 `docs/ip_history.json`）
+3. 带目标地区提示的 IP（`#US` 或 `ProxyIP.US.*`）
+4. 其余按 `sha256(UTC日期|IP)` 排序：每天换一批，几天内能把整个池子轮一遍
 
-它从以下位置读取配置：
+> 2026-10 之前是按 IP 字符串排序后截断，每轮都会固定丢掉 `216.x` 之后约 30% 的地址段。
 
-| 配置 | 来源 |
-|---|---|
-| Account ID | 环境变量 `CLOUDFLARE_ACCOUNT_ID` |
-| API Token | 环境变量 `CLOUDFLARE_API_TOKEN` |
-| KV Namespace ID | `wrangler.toml` 的 KV namespace `id` |
-| KV key 映射 | `docs/kv-manifest.json` |
+## 验证
 
-这样做的原因：GitHub Actions 里使用 `wrangler kv key put` 时，Wrangler 会额外请求 Cloudflare `/memberships`、`/accounts`，某些 API Token 权限组合下会返回认证失败。REST API 直写 KV 更稳定、权限边界更清楚。
-
-## DNS 同步方式
-
-`scripts/sync_dns.py` 使用 Cloudflare REST API 同步 `PROXYIP_RECORD_NAME` 指定的 DNS-only A 记录。
-
-默认值：
-
-```bash
-PROXYIP_ZONE_NAME=leilaomi.cc.cd
-PROXYIP_RECORD_NAME=proxyip.leilaomi.cc.cd
-```
-
-脚本会确保最终只有 1 条 DNS-only A 记录指向当前主 IP。
-
-## 本地重新生成数据
-
-命令按 `python3` 写；Windows 上若没有 `python3` 命令，把 `python3` 换成 `python` 即可，glob（如 `scripts/*.py`）也要在 PowerShell 里手动展开成文件列表。
-
-只生成本地数据，不同步 Cloudflare：
-
-```bash
-python3 build_dataset.py
-python3 scripts/validate_outputs.py
-python3 -m unittest discover -s tests
-```
-
-只在本机探测（约 6 分钟），产出本地 RTT 与吞吐供 CI 加权合并：
-
-```bash
-PROXYIP_PROBE_ONLY=1 python3 build_dataset.py
-git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
-```
-
-完整自动流程，包括 KV、DNS、Worker 部署和线上验证：
-
-```bash
-export CLOUDFLARE_ACCOUNT_ID="<Cloudflare Account ID>"
-export CLOUDFLARE_API_TOKEN="<Cloudflare API Token>"
-export PROXYIP_HMAC_SECRET="<HMAC Secret>"
-python3 scripts/auto_update.py
-```
-
-注意：本地完整流程会操作线上 Cloudflare。没有明确需要时，不要随便执行。
-
-## 候选源策略
-
-本项目只收集第三方中转 ProxyIP 候选，不使用 Cloudflare 官方 IP 段、普通 CF 优选 IP 或明显偏 CDN 边缘的来源。
-
-原因：本项目目标是给 Cloudflare Worker / CDN 场景提供可用 ProxyIP，而不是寻找 Cloudflare 自身边缘节点。
-
-候选源分三类：
-
-| 类型 | 说明 |
-|---|---|
-| 文本型 ProxyIP 源 | 远程文本直接提供 IP / IP:端口 |
-| 域名型 ProxyIP 源 | 解析 ProxyIP 域名 A 记录后检测 |
-| 手动源 | `allowlist.txt` / `denylist.txt`，用于临时保留或排除候选 |
-
-`allowlist.txt` / `denylist.txt` 支持：
-
-```text
-1.2.3.4
-1.2.3.4:443
-1.2.3.4:443#US
-```
-
-脚本会下载 Cloudflare 官方 IPv4 段并排除命中的候选，避免误把 Cloudflare 自身 IP 写入 ProxyIP 池。
-
-## Failover 策略
-
-项目优先稳定，不追求频繁切换。
-
-- 当前主 IP 仍健康时保持不变。
-- 当前主 IP 连续失效或质量低于门槛后才切换。
-- Top5 / standby 会按 ASN 分散选择，降低同一 ASN 集中风险。
-- DNS 永远只发布 1 个当前主 IP，备用池只通过 Worker 分发。
+- 每个候选调用 `https://api.090227.xyz/check?proxyip=<ip>`（并发 24，超时 35 秒），读取出口 IP 的国家、ASN、colo 和 Cloudflare bot management 字段。
+- 只接受 `success=true` **且** `supports_ipv4=true`。出口走 IPv6 的 `ipv6_only` 代理目前会被丢弃（通常约占验证成功数的一半）。
+- 检测 API 超时或网络错误时，才会退回直连 HTTPS 探测（`direct_https`）。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，也不计入 7 天成功率。
 
 ## 排序与测速：四个阶段
 
@@ -423,6 +190,58 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 
 不提交 `docs/probe_local.json` 的话，CI 读不到，等于只有美西单点数据。该文件由本地运行负责提交，CI 的 `git add` 列表里没有它，不会被覆盖。
 
+## 主 IP 与 failover
+
+目标是稳定，不是追求最快。
+
+| 情况 | 行为 |
+|---|---|
+| 主 IP 通过验证且满足主 IP 门槛（bot score ≥ 80、延迟 ≤ 2500 ms、吞吐 ≥ 1 MB/s、仍在 US、稳定性达标、不是 fallback） | 保留，`status=healthy`，`failure_count` 清零 |
+| 主 IP 质量不达标，但距上次切换不到 6 小时 | 保留，`status=degraded_quality_cooldown` |
+| 主 IP 没通过验证 | 保留，`status=degraded`，`failure_count+1`；沿用上一轮的国家/ASN 并标记 `risk.stale=true`，审计放行，这样计数才会被提交 |
+| 连续失败达到 `PROXYIP_FAILOVER_THRESHOLD`（默认 2） | 切到排名第一的候选，写入 `history.json` |
+
+- **不会主动升级**：主 IP 只要健康，即使排名已经掉到中游、前面有快得多的候选，也不会切换。
+- 按实际调度间隔（见下一节），一个失效的主 IP 通常要等两轮、也就是十几个小时才会被换掉。客户端可以用 `/standby.txt` 自己做兜底。
+- DNS 永远只发布 1 个 IP；备用池只通过 Worker 分发。
+
+## 自动化与部署
+
+`.github/workflows/proxyip-auto-update.yml`，job 超时 45 分钟，`concurrency` 不并发。
+
+- **设计**：每 3 小时一次（`17 */3 * * *` UTC）。
+- **实际**：GitHub 的定时任务经常延迟或被跳过，实测平均约 6–7 小时一轮，最长超过 10 小时。急用时去 Actions 页面手动 *Run workflow*。
+- 合并到 `main` **不会**触发运行（没有 push 触发器），新代码在下一次运行时生效。
+- 每次运行顺序：语法检查 → `build_dataset.py` → 校验 + 单元测试 → `auto_update.py`（同步 KV → 同步 DNS → `wrangler deploy` → 线上验证 → `audit.py` → 按白名单提交 `docs/`）。
+- 线上写入发生在审计和 git push **之前**：如果审计或推送失败，线上已经更新，但仓库里的 `state.json` 是旧的。
+- 一轮通常 3–5 分钟，测速约经第三方代理下载 300MB。
+
+## 配置
+
+| 项 | 值 / 位置 |
+|---|---|
+| Worker 名 | `cf-proxyip-us`（`wrangler.toml`，`workers_dev=false`） |
+| 自定义域名 `list.leilaomi.cc.cd` | 在 Cloudflare 控制台绑定，**不在** `wrangler.toml` 里 |
+| KV binding | `PROXYIP_KV`（namespace id 在 `wrangler.toml`） |
+| Zone / 记录 | `PROXYIP_ZONE_NAME=leilaomi.cc.cd`、`PROXYIP_RECORD_NAME=proxyip.leilaomi.cc.cd` |
+
+**GitHub Secrets**
+
+| Secret | 用途 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | KV / DNS REST API + `wrangler deploy`。需要的权限：Workers Scripts 编辑、Workers KV 编辑、Zone DNS 编辑 |
+| `PROXYIP_HMAC_SECRET` | CI 生成 Token 做线上验证 |
+
+**Worker Secret**
+
+| Secret | 用途 |
+|---|---|
+| `PROXYIP_SECRET` | 签发 / 校验 Cookie 和 Token。**值必须与 `PROXYIP_HMAC_SECRET` 相同**（两边名字不同是历史原因） |
+
+`CLOUDFLARE_ACCOUNT_ID` 作为普通环境变量写在 workflow 里，它不是密钥。
+
+**KV key**（`docs/kv-manifest.json`）：`result_json`、`current_json`、`current_txt`、`standby_txt`、`top5_txt`、`all_txt`、`us_txt`、`best_txt`、`base64_txt`、`v2ray_txt`、`history_json`、`ip_history_json`、`state_json`。Worker 实际只读前面的文本 key 和 `result_json`，后 3 个是备份。
+
 ## 环境变量
 
 门槛、排序权重、failover、同步与本机探测都可以通过环境变量覆盖。GitHub Actions 里设置的值见 `scripts/auto_update.py` 和 `.github/workflows/proxyip-auto-update.yml`；未设置时用下表默认值。
@@ -470,20 +289,42 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 | `PROXYIP_LOCAL_THROUGHPUT_WEIGHT` | `0.6` | 吞吐合并时本机数据的权重 |
 | `PROXYIP_LOCAL_PROBE_MAX_AGE_HOURS` | `168` | `docs/probe_local.json` 超过多少小时就不再采信 |
 
-## 安全与反爬
+## 本地运行
 
-Worker 提供基础防护：
+Windows 上把 `python3` 换成 `python`，`scripts/*.py` 需要手动展开。
 
-- `robots.txt` 禁止抓取。
-- 响应头包含 `X-Robots-Tag: noindex,nofollow,noarchive`。
-- 常见 bot、crawler、curl、wget、python-requests、扫描器 UA 默认 403。
-- 带合法 `Authorization: Bearer <HMAC_TOKEN>` 的程序化请求优先通过。
-- 文本与 JSON 数据接口需要 Cookie 或 HMAC Token。
-- `/health` 只返回最小健康信息。
-- `/health/full` 和 `/stats` 需要认证。
-- 支持 ETag / 304，减少重复传输。
+```bash
+# 只生成数据并校验，不碰线上
+python3 build_dataset.py
+python3 scripts/validate_outputs.py
+python3 -m unittest discover -s tests
+node --check worker.js
 
-这不是强认证系统。如果需要更严格访问控制，建议改为固定私密 token 或 Cloudflare Access。
+# 阶段 4：本机探测（约 6 分钟），只写 docs/probe_local.json
+PROXYIP_PROBE_ONLY=1 python3 build_dataset.py
+git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
+
+# 完整流程：会改线上 KV / DNS / Worker，没有明确需要不要跑
+export CLOUDFLARE_ACCOUNT_ID="<Cloudflare Account ID>"
+export CLOUDFLARE_API_TOKEN="<Cloudflare API Token>"
+export PROXYIP_HMAC_SECRET="<HMAC Secret>"
+python3 scripts/auto_update.py
+```
+
+`docs/probe_local.json` 超过 168 小时就不会再被采用，这时排序只反映 GitHub 美国 runner 的网络。要让阶段 4 生效，需要至少每周在自己的网络上跑一次。
+
+## 已知限制
+
+- **检测单点**：所有验证都依赖 `api.090227.xyz`。它不可用时只剩未验证的直连探测，这类结果不会成为主 IP。
+- **IPv6 出口被丢弃**：`ipv6_only` 代理通常也能当 ProxyIP 用，但目前不收。
+- **测速视角**：RTT 和吞吐是从 GitHub 美国 runner 测的；不跑阶段 4，排序就和你本地的体验无关。
+- **主 IP 不择优**：见上文 failover。
+- **调度延迟**：见上文自动化。
+- **每轮都部署**：`wrangler deploy` 无条件执行。
+- **ETag**：只有读取 `result_json` 的路径（如 `/current.json`、`/full.json`）支持 `If-None-Match` → 304；文本路径走 KV 快速通道，只带 ETag，不返回 304。
+- **`audit.py` 仍调用 `wrangler kv key get`** 读 KV，和同步走 REST API 不一致。
+- **仓库膨胀**：每轮都提交 `full.json` 和约 580KB 的 `ip_history.json`。
+- Actions 没有 pin 到 commit SHA，`wrangler@4` 也没锁小版本。
 
 ## 排障指南
 
@@ -525,6 +366,33 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 - GitHub Secret `PROXYIP_HMAC_SECRET` 是否存在。
 - Cloudflare Worker Secret `PROXYIP_SECRET` 是否存在。
 - 两者值是否一致。
+- 用的是不是 curl 等被拦截的 UA：这类 UA 只认 Bearer Token，不认 Cookie。
+- 跨 UTC 零点：前一天的 Token 仍有效，再往前就会被拒绝。
+
+### 5. Actions 变红但线上没切换
+
+先看 `docs/state.json` 的 `status` 和 `failure_count`。`degraded` 表示主 IP 本轮验证失败，下一轮仍失败就会 failover。如果 `failure_count` 一直不涨，说明 `audit.py` 或 git push 失败了，计数没有被提交。
+
+## 仓库结构
+
+| 路径 | 作用 |
+|---|---|
+| `build_dataset.py` | 收集、预算、验证、四阶段排序、failover、写 `docs/` |
+| `worker.js` | Worker：路由、认证、KV 读取、状态页 |
+| `wrangler.toml` | Worker 名、KV binding |
+| `scripts/auto_update.py` | CI 编排：同步、部署、验证、审计、提交 |
+| `scripts/sync_kv.py` / `sync_dns.py` | Cloudflare REST API 同步 KV / DNS |
+| `scripts/validate_outputs.py` | `docs/` 一致性校验（提交前） |
+| `scripts/audit.py` | 部署后审计：文件一致性、DNS 解析、线上接口、认证 |
+| `tests/` | 排序、历史、failover、候选预算、ASN、Worker 认证的单元测试 |
+| `allowlist.txt` / `denylist.txt` | 手动候选（可选） |
+| `docs/` | 每轮的数据快照，由脚本生成，**不要手改** |
+| `docs/probe_local.json` | 本机探测结果，只由本地提交，CI 不覆盖 |
+| `docs/operations.md` | 运维说明 |
+| `docs/archive/` | 2026-06 审计与计划，只作历史参考 |
+| `AGENTS.md` | 维护约定和线上操作禁令 |
+
+不进仓库：`docs/full.slim.json`（KV 上传前的瘦身版）、根目录 `result.json`（含 `all_results` 的调试输出）。
 
 ## 历史与归档
 
