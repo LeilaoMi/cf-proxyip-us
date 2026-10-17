@@ -499,5 +499,91 @@ class IpHistoryStorageTest(unittest.TestCase):
         self.assertIsNone(expired["1.1.1.1"]["mbps_at"])
 
 
+class RegressionP0Test(unittest.TestCase):
+    """2026-10 审计发现的 P0/P1 问题回归测试。"""
+
+    def _with_docs(self, files: dict):
+        tmp = tempfile.TemporaryDirectory()
+        docs = Path(tmp.name)
+        for name, payload in files.items():
+            (docs / name).write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+        saved = (build_dataset.DOCS, build_dataset.STATE_PATH, build_dataset.CURRENT_PATH, build_dataset.HISTORY_PATH)
+        build_dataset.DOCS = docs
+        build_dataset.STATE_PATH = docs / "state.json"
+        build_dataset.CURRENT_PATH = docs / "current.txt"
+        build_dataset.HISTORY_PATH = docs / "history.json"
+
+        def restore():
+            build_dataset.DOCS, build_dataset.STATE_PATH, build_dataset.CURRENT_PATH, build_dataset.HISTORY_PATH = saved
+            tmp.cleanup()
+        self.addCleanup(restore)
+
+    def test_degraded_current_keeps_last_known_country_and_counts_failure(self) -> None:
+        self._with_docs({
+            "state.json": {"current_ip": "9.9.9.9", "status": "healthy", "failure_count": 0},
+            "current.txt": "9.9.9.9\n",
+            "history.json": [],
+            "current.json": {"current": {"ip": "9.9.9.9", "risk": {"country": "US", "asn": 16276, "colo": "SEA"}}},
+        })
+        other = make_item("10.0.0.1")
+        current, state, _ = build_dataset.select_current([other], [{"ip": "9.9.9.9", "success": False, "error": "timeout"}])
+        self.assertEqual(current["ip"], "9.9.9.9")
+        self.assertEqual(state["status"], "degraded")
+        self.assertEqual(state["failure_count"], 1)
+        self.assertEqual(current["risk"]["country"], "US")  # 审计国家门不再因 None 失败
+        self.assertTrue(current["risk"]["stale"])
+
+    def test_second_consecutive_failure_fails_over(self) -> None:
+        self._with_docs({
+            "state.json": {"current_ip": "9.9.9.9", "status": "degraded", "failure_count": 1},
+            "current.txt": "9.9.9.9\n",
+            "history.json": [],
+        })
+        other = make_item("10.0.0.1")
+        current, state, history = build_dataset.select_current([other], [{"ip": "9.9.9.9", "success": False}])
+        self.assertEqual(current["ip"], "10.0.0.1")
+        self.assertEqual(state["failure_count"], 0)
+        self.assertEqual(history[0]["from"], "9.9.9.9")
+
+    def test_candidate_budget_is_not_ip_string_ordered(self) -> None:
+        rows = [{"ip": f"{a}.0.0.{b}", "sources": ["s"]} for a in (1, 50, 99, 150, 216) for b in range(1, 21)]
+        key = build_dataset.candidate_priority_key({}, day="20261017")
+        kept = sorted(rows, key=key)[:50]
+        first_octets = {r["ip"].split(".")[0] for r in kept}
+        self.assertTrue({"50", "99"} & first_octets)  # 旧逻辑只会留下 1.x 和 150/216 之前的地址
+        self.assertNotEqual([r["ip"] for r in kept], sorted(r["ip"] for r in rows)[:50])
+
+    def test_candidate_budget_priority_order(self) -> None:
+        hist = {"8.8.8.8": {"recent": "1"}}
+        rows = [
+            {"ip": "7.7.7.7", "sources": ["s"]},
+            {"ip": "8.8.8.8", "sources": ["s"]},
+            {"ip": "6.6.6.6", "sources": ["s"], "country_hint": "US"},
+            {"ip": "5.5.5.5", "sources": ["current_dns"]},
+        ]
+        ordered = [r["ip"] for r in sorted(rows, key=build_dataset.candidate_priority_key(hist, day="20261017"))]
+        self.assertEqual(ordered[:3], ["5.5.5.5", "8.8.8.8", "6.6.6.6"])
+
+    def test_non_target_region_domains_are_detected(self) -> None:
+        self.assertEqual(build_dataset.domain_region_hint("ProxyIP.SG.CMLiussss.net"), "SG")
+        self.assertEqual(build_dataset.domain_region_hint("ProxyIP.US.CMLiussss.net"), "US")
+        self.assertIsNone(build_dataset.domain_region_hint("ts.hpc.tw"))
+
+    def test_asn_cap_never_drops_current_ip(self) -> None:
+        items = [make_item(f"10.0.0.{i}") for i in range(1, 6)]  # 同 ASN=1
+        kept = build_dataset.limit_asn_spread(items, max_per_asn=2, keep={"10.0.0.5"})
+        self.assertIn("10.0.0.5", [x["ip"] for x in kept])
+        dropped = build_dataset.limit_asn_spread(items, max_per_asn=2)
+        self.assertNotIn("10.0.0.5", [x["ip"] for x in dropped])
+
+    def test_fallback_never_counts_as_healthy_current_or_history_success(self) -> None:
+        fallback = build_dataset.enrich({
+            "ip": "2.2.2.2", "success": True, "supports_ipv4": True, "latency_ms": 100,
+            "country": "US", "cf_bot_score": 95, "method": "direct_https", "fallback_unverified": True,
+        }, {"sources": ["fallback"]})
+        self.assertFalse(build_dataset.current_quality_ok(fallback))
+        self.assertFalse(build_dataset.ip_history_success(fallback)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,6 @@ const EMPTY_RESULT = {
 };
 
 const ACCESS_COOKIE = "proxyip_access";
-const ACCESS_VALUE = "ok";
 const ACCESS_TTL = 60 * 60 * 8;
 const STALE_WARN_MS = 6 * 60 * 60 * 1000;
 const STALE_FAIL_MS = 12 * 60 * 60 * 1000;
@@ -193,7 +192,7 @@ export default {
     if (url.pathname === "/history.json") return reply(withEtag(json(result.history || [], true), etag));
     if (url.pathname === "/full.json") return reply(withEtag(json(result, true), etag));
 
-    return reply(html(renderHome(result, url)));
+    return reply(html(renderHome(result, url), await issueAccessCookie(env)));
   }
 };
 
@@ -229,9 +228,12 @@ async function verifyAccess(request, url, env) {
   const secret = env.PROXYIP_SECRET || "";
 
   if (secret) {
-    if (token.startsWith(today + "-")) {
-      const expected = await hmacHex(secret, today);
-      if (token.slice(today.length + 1) === expected) return null;
+    // 当天和前一天的 token 都有效，避免 UTC 零点瞬间全部失效
+    for (const day of [today, utcDay(-1)]) {
+      if (token.startsWith(day + "-")) {
+        const expected = await hmacHex(secret, day);
+        if (timingSafeEqual(token.slice(day.length + 1), expected)) return null;
+      }
     }
   } else if (env.ALLOW_LEGACY_DATE_TOKEN === "1" && token === today) {
     return null;
@@ -240,11 +242,50 @@ async function verifyAccess(request, url, env) {
   const ua = request.headers.get("user-agent") || "";
   if (BLOCKED_UA.test(ua)) return "blocked user-agent";
 
-  // Cookie from homepage visit
-  if ((request.headers.get("cookie") || "").includes(`${ACCESS_COOKIE}=${ACCESS_VALUE}`)) return null;
+  // Signed cookie from homepage visit: "<expiresEpochSeconds>.<hmac>"，精确解析，不再用 includes()
+  if (secret && await verifyAccessCookie(request, secret)) return null;
 
   if (!secret) return "server token secret is not configured";
   return "invalid or missing token";
+}
+
+function utcDay(offsetDays = 0) {
+  return new Date(Date.now() + offsetDays * 86400_000).toISOString().slice(0, 10).replace(/-/g, "");
+}
+
+function timingSafeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function readCookie(request, name) {
+  for (const part of (request.headers.get("cookie") || "").split(";")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    if (part.slice(0, idx).trim() === name) return part.slice(idx + 1).trim();
+  }
+  return null;
+}
+
+async function issueAccessCookie(env) {
+  const secret = env.PROXYIP_SECRET || "";
+  if (!secret) return null;
+  const exp = Math.floor(Date.now() / 1000) + ACCESS_TTL;
+  const sig = await hmacHex(secret, `cookie|${exp}`);
+  return `${ACCESS_COOKIE}=${exp}.${sig}; Max-Age=${ACCESS_TTL}; Path=/; Secure; HttpOnly; SameSite=Lax`;
+}
+
+async function verifyAccessCookie(request, secret) {
+  const value = readCookie(request, ACCESS_COOKIE);
+  if (!value) return false;
+  const m = /^(\d{10})\.([0-9a-f]{64})$/.exec(value);
+  if (!m) return false;
+  const exp = Number(m[1]);
+  const now = Date.now() / 1000;
+  if (exp < now || exp > now + ACCESS_TTL + 60) return false;
+  return timingSafeEqual(m[2], await hmacHex(secret, `cookie|${exp}`));
 }
 
 function bearerToken(request) {
@@ -325,8 +366,10 @@ function noStoreJson(data) {
   response.headers.set("cache-control", "private, no-store");
   return response;
 }
-function html(body) {
-  return withHeaders(new Response(body, { headers: { "content-type": "text/html; charset=utf-8", "set-cookie": `${ACCESS_COOKIE}=${ACCESS_VALUE}; Max-Age=${ACCESS_TTL}; Path=/; Secure; HttpOnly; SameSite=Lax` } }), false);
+function html(body, cookie = null) {
+  const headers = { "content-type": "text/html; charset=utf-8" };
+  if (cookie) headers["set-cookie"] = cookie;
+  return withHeaders(new Response(body, { headers }), false);
 }
 function withHeaders(response, privateCache = false, allowCors = false, maxAge = 300) {
   const headers = new Headers(response.headers);

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import concurrent.futures
 import ipaddress
 import json
@@ -247,6 +248,10 @@ def collect_candidates() -> tuple[list[dict], list[dict]]:
         skipped_cf = 0
         domain_errors: dict[str, str] = {}
         for domain in src["domains"]:
+            region = domain_region_hint(domain)
+            if region and TARGET_COUNTRIES and region not in TARGET_COUNTRIES:
+                domain_errors[domain] = f"skipped: region {region} outside target"
+                continue
             ips = resolve_domain(domain)
             if not ips:
                 domain_errors[domain] = "no A record"
@@ -256,7 +261,7 @@ def collect_candidates() -> tuple[list[dict], list[dict]]:
                 row = {
                     "ip": ip,
                     "port": 443,
-                    "country_hint": None,
+                    "country_hint": region,
                     "sources": [src["name"]],
                     "source_domain": domain,
                     "source_type": "domain_proxyip",
@@ -285,8 +290,40 @@ def collect_candidates() -> tuple[list[dict], list[dict]]:
 
     deny = {x["ip"] for x in read_ip_file(MANUAL_DENYLIST, "manual_denylist")}
     candidates = [x for x in by_ip.values() if x["ip"] not in deny]
-    candidates.sort(key=lambda x: ("current_dns" not in x.get("sources", []), x["ip"]))
+    candidates.sort(key=candidate_priority_key(load_ip_history()))
+    if len(candidates) > MAX_CANDIDATES:
+        print(f"candidate budget: keeping {MAX_CANDIDATES}/{len(candidates)} (priority: current, recent success, target-region hint, daily rotation)", flush=True)
     return candidates[:MAX_CANDIDATES], source_stats
+
+
+def domain_region_hint(domain: str) -> str | None:
+    """ProxyIP.US.CMLiussss.net -> US；其他域名无地区信息。"""
+    parts = domain.split(".")
+    if len(parts) >= 4 and parts[0].lower() == "proxyip" and len(parts[1]) == 2 and parts[1].isalpha():
+        return parts[1].upper()
+    return None
+
+
+def candidate_priority_key(ip_history: dict, day: str | None = None):
+    """候选截断顺序：当前主 IP > 近期验证成功 > 目标地区提示 > 按天轮换的伪随机顺序。
+
+    以前按 IP 字符串排序截断，会每轮系统性丢掉 2xx 之后的地址段。
+    """
+    day = day or datetime.now(timezone.utc).strftime("%Y%m%d")
+    records = ip_history if isinstance(ip_history, dict) else {}
+
+    def recent_ok(ip: str) -> bool:
+        rec = records.get(ip)
+        return isinstance(rec, dict) and "1" in str(rec.get("recent") or "")[-8:]
+
+    def key(x: dict) -> tuple:
+        ip = x["ip"]
+        hint = (x.get("country_hint") or "").upper()
+        target_hint = bool(hint) and (not TARGET_COUNTRIES or hint in TARGET_COUNTRIES)
+        rotation = hashlib.sha256(f"{day}|{ip}".encode()).hexdigest()
+        return ("current_dns" not in x.get("sources", []), not recent_ok(ip), not target_hint, rotation)
+
+    return key
 
 def check_cmliu(ip: str, retries: int = 2) -> dict:
     url = f"{CHECK_API}?proxyip={ip}"
@@ -674,12 +711,20 @@ TOP5_MAX_PER_ASN = 1
 STANDBY_MAX_PER_ASN = 2
 FALLBACK_RANK_PENALTY = 200000
 
-def limit_asn_spread(items: list[dict], max_per_asn: int = MAX_PER_ASN) -> list[dict]:
-    """限制同 ASN 最多保留 max_per_n 个 IP，输入已按 rank_key 排序（最优在前）"""
+def limit_asn_spread(items: list[dict], max_per_asn: int = MAX_PER_ASN, keep: set[str] | None = None) -> list[dict]:
+    """限制同 ASN 最多保留 max_per_asn 个 IP，输入已按 rank_key 排序（最优在前）。
+
+    keep 中的 IP（当前主 IP）永远保留，否则会被同 ASN 更优的 IP 挤掉而被误判为失效。
+    """
+    keep = keep or set()
     asn_count: dict[str, int] = {}
     out: list[dict] = []
     for item in items:
         asn = (item.get("risk") or {}).get("asn") or "unknown"
+        if item.get("ip") in keep:
+            asn_count[asn] = asn_count.get(asn, 0) + 1
+            out.append(item)
+            continue
         if asn_count.get(asn, 0) >= max_per_asn:
             continue
         asn_count[asn] = asn_count.get(asn, 0) + 1
@@ -696,6 +741,8 @@ def preferred_colo_rank(item: dict) -> int:
 
 def current_quality_ok(item: dict) -> bool:
     risk = item.get("risk") or {}
+    if risk.get("grade") == "fallback_unverified" or item.get("method") == "direct_https" or item.get("fallback_unverified"):
+        return False
     score = risk.get("cf_bot_score")
     latency = item.get("latency_ms") if isinstance(item.get("latency_ms"), int) else 999999
     if score is not None and int(score) < CURRENT_MIN_BOT_SCORE:
@@ -929,6 +976,16 @@ def read_current_ip() -> str | None:
     return state.get("current_ip")
 
 
+def last_known_current_risk(ip: str) -> dict:
+    """degraded 时沿用上一轮 current.json 中该 IP 的地区/ASN，避免 country=None 导致审计失败、failure_count 无法持久化。"""
+    data = read_json(DOCS / "current.json", {})
+    cur = data.get("current") if isinstance(data, dict) else None
+    if isinstance(cur, dict) and cur.get("ip") == ip and isinstance(cur.get("risk"), dict):
+        r = cur["risk"]
+        return {k: r.get(k) for k in ("asn", "as_organization", "country", "city", "colo") if r.get(k) is not None}
+    return {}
+
+
 def select_current(valid: list[dict], all_results: list[dict]) -> tuple[dict, dict, list[dict]]:
     previous_state = read_json(STATE_PATH, {})
     history = read_json(HISTORY_PATH, [])
@@ -963,12 +1020,13 @@ def select_current(valid: list[dict], all_results: list[dict]) -> tuple[dict, di
     failure_count = int(previous_state.get("failure_count") or 0) + (1 if previous_ip else 0)
     if previous_ip and failure_count < FAILOVER_THRESHOLD:
         checked = checked_by_ip.get(previous_ip, {})
+        last_risk = last_known_current_risk(previous_ip)
         current_item = {
             "ip": previous_ip,
             "latency_ms": checked.get("latency_ms"),
             "portRemote": checked.get("portRemote", 443),
             "sources": ["previous_current"],
-            "risk": {"grade": "unknown", "cf_bot_score": None, "corporate_proxy": None, "verified_bot": None, "asn": None, "as_organization": None, "country": None, "city": None, "colo": None},
+            "risk": {"grade": "unknown", "cf_bot_score": None, "corporate_proxy": None, "verified_bot": None, "asn": None, "as_organization": None, "country": None, "city": None, "colo": None, **last_risk, "stale": True},
             "selection_reason": "kept_until_failure_threshold",
         }
         state = {
@@ -1182,6 +1240,8 @@ def load_ip_history() -> dict:
 def ip_history_success(item: dict) -> tuple[bool, int | None]:
     """success = 验证通过且本地握手成功，不受地区过滤和 ASN 截断影响。"""
     verified = item.get("success") is True and item.get("supports_ipv4") is True
+    if item.get("method") == "direct_https" or item.get("fallback_unverified"):
+        verified = False  # 兜底探测没有经过第三方验证，不计入稳定性成功率
     if not verified:
         return False, None
     if not item.get("probe_attempted"):
@@ -1444,7 +1504,7 @@ def main() -> None:
 
     valid = [x for x in verified if is_target_region(x)]
     valid.sort(key=rank_key)
-    valid = limit_asn_spread(valid)
+    valid = limit_asn_spread(valid, keep={previous_ip} if previous_ip else None)
     current, state, switch_history = select_current(valid, results)
     out = {
         "summary": {
@@ -1454,7 +1514,7 @@ def main() -> None:
             "target_countries": sorted(TARGET_COUNTRIES),
             "preferred_colos": PREFERRED_COLOS,
             "selection_policy": "single stable current IP; keep while healthy and still in target region; fail over only after consecutive validation failures",
-            "ranking": "three stages: quality gate first (bot score >= min, target region, no corporateProxy/verifiedBot, third-party verification, local handshake latency <= max, jitter <= max, enough probe samples, 7d success rate), then effective latency = blended local P50 + jitter weight + stability penalty + transfer time of a fixed payload; bot score only breaks ties inside the gate",
+            "ranking": "four stages (local RTT/jitter, rolling stability, throughput, local probe overlay): quality gate first (bot score >= min, target region, no corporateProxy/verifiedBot, third-party verification, local handshake latency <= max, jitter <= max, enough probe samples, 7d success rate), then effective latency = blended local P50 + jitter weight + stability penalty + transfer time of a fixed payload; bot score only breaks ties inside the gate",
             "latency_metric": "local TCP+TLS handshake P50 in ms; third-party checker round trip kept as api_latency_ms; measured download throughput folded in as transfer time",
             "probe": {
                 "samples": PROBE_SAMPLES,

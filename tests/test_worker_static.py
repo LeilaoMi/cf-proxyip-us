@@ -27,6 +27,17 @@ class WorkerStaticTest(unittest.TestCase):
         self.assertIn("RESULT_CACHE_TTL_MS", WORKER)
         self.assertIn("loadTextKey", WORKER)
 
+    def test_access_cookie_is_signed_and_parsed_exactly(self) -> None:
+        self.assertNotIn('ACCESS_VALUE', WORKER)
+        self.assertNotIn('.includes(`${ACCESS_COOKIE}=', WORKER)
+        self.assertIn("function verifyAccessCookie", WORKER)
+        self.assertIn("function readCookie", WORKER)
+        self.assertIn("cookie|${exp}", WORKER)
+
+    def test_token_compare_is_constant_time_with_day_grace(self) -> None:
+        self.assertIn("function timingSafeEqual", WORKER)
+        self.assertIn("utcDay(-1)", WORKER)
+
 
 if __name__ == "__main__":
     unittest.main()
