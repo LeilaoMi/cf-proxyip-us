@@ -6,19 +6,23 @@
     "proxied": false,
     "ttl": 300,
     "risk": {
-      "grade": "unknown",
-      "cf_bot_score": null,
-      "corporate_proxy": null,
-      "verified_bot": null,
+      "cf_bot_score": 99,
+      "corporate_proxy": false,
+      "verified_bot": false,
+      "penalty": 928.98302794953,
+      "grade": "low",
+      "verification_method": "cmliu",
       "asn": 16276,
       "as_organization": "OVH US LLC",
+      "exit_ip": "51.81.209.10",
       "country": "US",
       "city": "Hillsboro",
-      "colo": null,
-      "stale": true
+      "candidate_colo": "DFW",
+      "exit_colo": "SEA",
+      "colo": "SEA"
     },
-    "latency_ms": 433,
+    "latency_ms": 130,
     "port": 443,
-    "selection_reason": "kept_until_failure_threshold"
+    "selection_reason": "kept_current_ip_still_healthy"
   }
 ]
