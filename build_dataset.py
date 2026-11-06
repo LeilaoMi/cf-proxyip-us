@@ -49,7 +49,18 @@ PROXYIP_DOMAIN_SOURCES = [
 ]
 
 CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4"
-CHECK_API = "https://api.090227.xyz/check"
+# 第三方 ProxyIP 检测接口，按顺序尝试；前一个出错或自身故障时换下一个。
+# 2026-11-06 api.090227.xyz 迁到 Cloudflare Snippets 后无法 connect()，全部误判失败。
+CHECK_APIS = [
+    u.strip()
+    for u in os.environ.get(
+        "CHECK_APIS",
+        "https://check.proxyip.cmliussss.net/check,https://api.090227.xyz/check",
+    ).split(",")
+    if u.strip()
+]
+CHECK_API = CHECK_APIS[0]
+CHECKER_FAULT_MARKERS = ("not available in snippets", "connect() is not available")
 USER_AGENT = "cf-proxyip-stable-builder/2.0"
 MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
 TIMEOUT = int(os.environ.get("PROXYIP_CHECK_TIMEOUT", "35"))
@@ -325,8 +336,20 @@ def candidate_priority_key(ip_history: dict, day: str | None = None):
 
     return key
 
-def check_cmliu(ip: str, retries: int = 2) -> dict:
-    url = f"{CHECK_API}?proxyip={ip}"
+def checker_fault(data: dict) -> bool:
+    """检测接口自身故障（网络错误，或接口运行环境不支持 connect）。"""
+    if data.get("success") is True:
+        return False
+    if data.get("checker_error"):
+        return True
+    blob = json.dumps(data.get("probe_results") or {}, ensure_ascii=False).lower()
+    blob += " " + str(data.get("error") or "").lower()
+    return any(m in blob for m in CHECKER_FAULT_MARKERS)
+
+
+def check_cmliu(ip: str, retries: int = 2, api: str | None = None) -> dict:
+    api = api or CHECK_API
+    url = f"{api}?proxyip={ip}"
     last_err = None
     for attempt in range(retries):
         start = time.monotonic()
@@ -336,12 +359,13 @@ def check_cmliu(ip: str, retries: int = 2) -> dict:
                 data = json.loads(res.read().decode("utf-8", "ignore"))
             data["latency_ms"] = int((time.monotonic() - start) * 1000)
             data["ip"] = ip
+            data["checker"] = api
             return data
         except Exception as exc:
             last_err = exc
             if attempt < retries - 1:
                 time.sleep(1)
-    return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000}
+    return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000, "checker": api, "checker_error": True}
 
 
 def check_https_direct(ip: str, timeout: int = 8) -> dict:
@@ -404,8 +428,14 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
 
 def check_with_fallback(ip: str) -> dict:
     """先用 cmliu API，失败则用直接 HTTPS 测试"""
-    result = check_cmliu(ip)
-    
+    result = {}
+    for api in CHECK_APIS:
+        result = check_cmliu(ip, api=api)
+        if not checker_fault(result):
+            break
+    if checker_fault(result):
+        result["checker_error"] = True
+
     # 如果 cmliu API 成功，直接返回
     if result.get("success") is True and result.get("supports_ipv4") is True:
         return result
@@ -1458,6 +1488,14 @@ def main() -> None:
             if done % 25 == 0 or done == len(candidates):
                 print(f"checked {done}/{len(candidates)} ipv4_valid={len(verified)}")
 
+    checker_errors = sum(1 for r in results if r.get("checker_error"))
+    print(f"checker errors: {checker_errors}/{len(results)}")
+    if results and not verified and checker_errors >= len(results) * 0.9:
+        raise SystemExit(
+            f"all ProxyIP checkers look broken ({checker_errors}/{len(results)} checker errors via {CHECK_APIS}); "
+            "refusing to publish an empty list, live data left unchanged"
+        )
+
     pre_region_valid_count = len(verified)
     if verified:
         print(f"probing {len(verified)} verified candidates with {PROBE_SAMPLES} local TCP+TLS samples")
@@ -1562,6 +1600,7 @@ def main() -> None:
             "current_ip": current["ip"],
             "checked_at": now_iso(),
             "checker": CHECK_API,
+            "checkers": CHECK_APIS,
         },
         "recommended_top5": [current] + diverse_candidates(valid, current, 4, TOP5_MAX_PER_ASN),
         "valid_ips": valid,
