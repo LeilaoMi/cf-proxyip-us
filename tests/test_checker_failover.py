@@ -47,6 +47,21 @@ class CheckerFailoverTests(unittest.TestCase):
             r = bd.check_with_fallback("1.2.3.4")
         self.assertTrue(r["checker_error"])
 
+    def test_default_checkers_prefer_working_host_and_drop_090227(self):
+        self.assertEqual(bd.CHECK_APIS[0], "https://check.proxyip.cmliussss.net/check")
+        self.assertFalse(any("090227" in u for u in bd.CHECK_APIS))
+
+    def test_run_checks_collects_every_ip(self):
+        with mock.patch.object(bd, "check_with_fallback", lambda ip: dict(GOOD, ip=ip)):
+            out = bd.run_checks(["1.1.1.1", "2.2.2.2", "3.3.3.3"], 2)
+        self.assertEqual(sorted(r["ip"] for r in out), ["1.1.1.1", "2.2.2.2", "3.3.3.3"])
+
+    def test_log_checker_errors_groups_samples(self):
+        rows = [{"ip": "1", "checker_error": True, "checker": "a", "error": "HTTPError: 429"}] * 3
+        with mock.patch("builtins.print") as p:
+            bd.log_checker_errors(rows, "t")
+        self.assertIn("x3", p.call_args_list[0].args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

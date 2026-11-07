@@ -49,19 +49,24 @@ PROXYIP_DOMAIN_SOURCES = [
 ]
 
 CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4"
-# 第三方 ProxyIP 检测接口，按顺序尝试；前一个出错或自身故障时换下一个。
-# 2026-11-06 api.090227.xyz 迁到 Cloudflare Snippets 后无法 connect()，全部误判失败。
+# 第三方 ProxyIP 检测接口（cmliu/CF-Workers-CheckProxyIP），按顺序尝试；前一个出错或自身故障时换下一个。
+# 2026-10-21 上游加入 API_HOST，官方页面改为调用 api.check.proxyip.cmliussss.net，
+# 但截至 2026-11-07 该域名与 api.090227.xyz 一样跑在 Cloudflare Snippets 上（connect() 不可用），
+# 只保留作备用以便上游修好后自动生效；api.090227.xyz 已移除。
 CHECK_APIS = [
     u.strip()
     for u in os.environ.get(
         "CHECK_APIS",
-        "https://check.proxyip.cmliussss.net/check,https://api.090227.xyz/check",
+        "https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check",
     ).split(",")
     if u.strip()
 ]
 CHECK_API = CHECK_APIS[0]
 CHECKER_FAULT_MARKERS = ("not available in snippets", "connect() is not available")
 USER_AGENT = "cf-proxyip-stable-builder/2.0"
+# 第一轮出现接口故障的 IP，退避后用较低并发再测一轮
+CHECKER_RETRY_DELAY_S = float(os.environ.get("CHECKER_RETRY_DELAY_S", "30"))
+CHECKER_RETRY_WORKERS = int(os.environ.get("CHECKER_RETRY_WORKERS", "6"))
 MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
 TIMEOUT = int(os.environ.get("PROXYIP_CHECK_TIMEOUT", "35"))
 MAX_CANDIDATES = int(os.environ.get("PROXYIP_MAX_CANDIDATES", "1400"))
@@ -362,9 +367,16 @@ def check_cmliu(ip: str, retries: int = 2, api: str | None = None) -> dict:
             data["checker"] = api
             return data
         except Exception as exc:
-            last_err = exc
+            detail = f"{type(exc).__name__}: {exc}"
+            code = getattr(exc, "code", None)
+            if code is not None:
+                try:
+                    detail += f" body={exc.read(200).decode('utf-8', 'ignore')!r}"
+                except Exception:
+                    pass
+            last_err = detail
             if attempt < retries - 1:
-                time.sleep(1)
+                time.sleep(1 + attempt)
     return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000, "checker": api, "checker_error": True}
 
 
@@ -1461,6 +1473,40 @@ def probe_only_main() -> None:
     print("commit docs/probe_local.json so CI can merge it as weighted data", flush=True)
 
 
+def run_checks(ips: list[str], workers: int, label: str = "checked") -> list[dict]:
+    """并发调用检测接口，返回每个 IP 的结果（顺序不保证）。"""
+    out: list[dict] = []
+    if not ips:
+        return out
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(check_with_fallback, ip) for ip in ips]
+        valid = 0
+        for done, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            item = fut.result()
+            out.append(item)
+            if item.get("success") is True and item.get("supports_ipv4") is True:
+                valid += 1
+            if done % 25 == 0 or done == len(ips):
+                print(f"{label} {done}/{len(ips)} ipv4_valid={valid}", flush=True)
+    return out
+
+
+def log_checker_errors(results: list[dict], stage: str, limit: int = 5) -> None:
+    """打印接口故障的样本，便于从 Actions 日志直接定位原因。"""
+    counts: dict[str, int] = {}
+    for r in results:
+        if not r.get("checker_error"):
+            continue
+        err = str(r.get("error") or "")
+        if not err:
+            blob = json.dumps(r.get("probe_results") or {}, ensure_ascii=False)
+            err = next((m for m in CHECKER_FAULT_MARKERS if m in blob.lower()), "checker fault")
+        key = f"{r.get('checker')}: {err[:200]}"
+        counts[key] = counts.get(key, 0) + 1
+    for key, n in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]:
+        print(f"checker error sample ({stage}) x{n}: {key}", flush=True)
+
+
 def main() -> None:
     if PROBE_ONLY:
         probe_only_main()
@@ -1471,25 +1517,28 @@ def main() -> None:
     by_ip = {x["ip"]: x for x in candidates}
     ip_history = load_ip_history()
     print(f"stability history loaded: {len(ip_history)} ips")
-    results = []
+    results = run_checks([row["ip"] for row in candidates], MAX_WORKERS)
+    retry_ips = [r["ip"] for r in results if r.get("checker_error")]
+    if retry_ips:
+        log_checker_errors(results, "first pass")
+        print(f"retrying {len(retry_ips)} checker-error IPs after {CHECKER_RETRY_DELAY_S:.0f}s with {CHECKER_RETRY_WORKERS} workers", flush=True)
+        time.sleep(CHECKER_RETRY_DELAY_S)
+        retried = {r["ip"]: r for r in run_checks(retry_ips, CHECKER_RETRY_WORKERS, label="retried")}
+        results = [retried.get(r["ip"], r) if r.get("checker_error") else r for r in results]
+
     verified = []
     success_not_ipv4 = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {pool.submit(check_with_fallback, row["ip"]): row["ip"] for row in candidates}
-        done = 0
-        for fut in concurrent.futures.as_completed(futures):
-            item = fut.result()
-            results.append(item)
-            if item.get("success") is True and item.get("supports_ipv4") is True:
-                verified.append(enrich(item, by_ip.get(item["ip"]), stability_for(ip_history, item["ip"])))
-            elif item.get("success") is True:
-                success_not_ipv4 += 1
-            done += 1
-            if done % 25 == 0 or done == len(candidates):
-                print(f"checked {done}/{len(candidates)} ipv4_valid={len(verified)}")
+    for item in results:
+        if item.get("success") is True and item.get("supports_ipv4") is True:
+            verified.append(enrich(item, by_ip.get(item["ip"]), stability_for(ip_history, item["ip"])))
+        elif item.get("success") is True:
+            success_not_ipv4 += 1
+    print(f"ipv4_valid={len(verified)}")
 
     checker_errors = sum(1 for r in results if r.get("checker_error"))
     print(f"checker errors: {checker_errors}/{len(results)}")
+    if checker_errors:
+        log_checker_errors(results, "final")
     if results and not verified and checker_errors >= len(results) * 0.9:
         raise SystemExit(
             f"all ProxyIP checkers look broken ({checker_errors}/{len(results)} checker errors via {CHECK_APIS}); "
