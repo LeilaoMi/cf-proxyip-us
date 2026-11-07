@@ -42,7 +42,7 @@ proxyip.leilaomi.cc.cd
 | `/full.json` | 完整报告（来源统计、每个 IP 的质量与测速） |
 | `/state.json`、`/history.json` | failover 状态、主 IP 切换历史 |
 | `/stats` | ASN / colo / 延迟分布 |
-| `/token` | 当天的 HMAC Token（需 Cookie） |
+| `/token` | 当天的 HMAC Token（需签名 Cookie 或有效 HMAC Token） |
 
 数据新鲜度：`/health` 在数据超过 6 小时时 `stale=true`，超过 12 小时 `ok=false`（HTTP 状态码仍是 200）。
 
@@ -74,7 +74,7 @@ GitHub Actions（cron 17 */3 * * * UTC，也可手动触发）
  │   ├─ ① 收集      文本源 + 域名源 + allowlist + 当前 DNS IP，剔除 Cloudflare 官方段和 denylist
  │   ├─ ② 预算      按优先级取前 PROXYIP_MAX_CANDIDATES（默认 1400）
  │   ├─ ③ 验证      cmliu 检测接口（CHECK_APIS 依次故障转移）：出口 IPv4、国家、ASN、colo、bot score
- │   │              接口自身故障的 IP 退避后低并发重测一轮；几乎全部故障则直接退出、不发布
+ │   │              接口自身故障的 IP 退避后低并发重测一轮；无有效 IP 且接口故障 ≥90% 时直接退出、不发布
  │   ├─ ④ 测速排序  本机 TCP+TLS RTT → 7 天稳定性 → 前 30 个下载 10MB 测吞吐 → 叠加本地探测
  │   ├─ ⑤ 过滤      只留目标国家（默认 US），同一 ASN 最多 10 个（主 IP 永远保留）
  │   ├─ ⑥ 选主      主 IP 健康就保留，连续失败才 failover
@@ -126,10 +126,10 @@ Cloudflare：Worker cf-proxyip-us（只读 KV 分发，不做扫描）· KV PROX
 - 每个候选调用 `<CHECK_API>?proxyip=<ip>`（并发 24，单次超时 35 秒，每个接口最多试 2 次），读取 `probe_results.ipv4.exit` 里的国家、ASN、colo 和 Cloudflare bot management 字段。
 - **接口故障转移**：网络 / HTTP 错误，或返回 `connect() is not available` 这类接口自身故障时，换下一个接口；候选本身不通（如 connection refused）不换。
 - **退避重试**：第一轮仍是接口故障的 IP，等 `CHECKER_RETRY_DELAY_S`（30 秒）后用 `CHECKER_RETRY_WORKERS`（6）并发再测一轮。重试轮总时长不超过 `CHECKER_RETRY_BUDGET_S`（300 秒），且必须在脚本启动后 `CHECKER_RETRY_CUTOFF_S`（1200 秒）内结束；每次请求、响应体读取和直连探测都受这个截止时间约束，没测完的 IP 保留第一轮结果。
-- **错误样本**：接口故障按「接口: 错误」分组打印前 5 条（含 HTTP 状态码和响应体前 200 字节，重试轮不读响应体），直接在 Actions 日志里定位。
+- **错误样本**：接口故障按「接口: 错误」分组打印前 5 条。样本只记录每个 IP 最后尝试的那个接口，前面接口的错误会被覆盖（含 HTTP 状态码和响应体前 200 字节，重试轮不读响应体），直接在 Actions 日志里定位。
 - **故障保护**：没有任何有效 IP 且 ≥90% 结果是接口故障时，脚本以 `all ProxyIP checkers look broken` 退出，不发布空列表，线上数据保持不变。
 - 只接受 `success=true` **且** `supports_ipv4=true`。出口走 IPv6 的 `ipv6_only` 代理目前会被丢弃（通常约占验证成功数的一半）。
-- 所有接口都超时或网络错误时，才会退回直连 HTTPS 探测（`direct_https`）。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，也不计入 7 天成功率。
+- **最后一个**接口的结果是超时或网络错误时，退回直连 HTTPS 探测（`direct_https`）；前面的接口即使返回 Snippets 错误也不影响这个判断。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，也不计入 7 天成功率。
 
 ## 排序与测速：四个阶段
 
@@ -265,7 +265,7 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 | `CHECK_APIS` | `https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check` | 检测接口列表，逗号分隔，按顺序故障转移 |
 | `CHECKER_RETRY_DELAY_S` | `30` | 第一轮接口故障后，重试前的退避秒数 |
 | `CHECKER_RETRY_WORKERS` | `6` | 重试轮并发数 |
-| `CHECKER_RETRY_BUDGET_S` | `300` | 重试轮总预算，单位秒 |
+| `CHECKER_RETRY_BUDGET_S` | `300` | 重试轮总预算，单位秒；实际取它与截止时间剩余秒数的较小值，不足 30 秒则跳过整轮重试 |
 | `CHECKER_RETRY_CUTOFF_S` | `1200` | 重试必须在脚本启动后多少秒内结束，给后续测速和部署留时间 |
 | `PROXYIP_MAX_CANDIDATES` | `1400` | 最多检测多少个候选 |
 | `PROXYIP_LIST_DOMAIN` | `https://list.leilaomi.cc.cd` | `scripts/auto_update.py` 读取线上列表的地址 |
@@ -393,9 +393,9 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 
 先在日志里搜 `checker errors` 和 `checker error sample`：
 
-- `checker errors: N/N` 加 `all ProxyIP checkers look broken`：检测接口全挂，线上数据没动。看样本里的错误：`connect() is not available in Snippets` 表示该接口已改成 Snippets、不会自己恢复，需要改 `CHECK_APIS`；超时、5xx、429 一般是临时故障，下一轮多半自愈。
+- `checker errors: N/N` 加 `all ProxyIP checkers look broken`：检测接口全挂，线上数据没动。看样本里的错误：`connect() is not available in Snippets` 表示**样本里那个接口**已改成 Snippets、不会自己恢复；超时、5xx、429 一般是临时故障，下一轮多半自愈。样本只反映最后尝试的接口（通常是备用），改 `CHECK_APIS` 前先用下面的 curl 逐个测一遍主接口。
 - `docs/all.txt has too few valid IPs`：有效 IP 少于 5 个。若 `checker errors` 不高，说明候选本身大面积失效或上游判定变严，去看候选来源。
-- 手动验证接口：`curl "https://check.proxyip.cmliussss.net/check?proxyip=<当前主 IP>:443"`，`success` 应为 `true`。
+- 手动验证接口：对 `CHECK_APIS` 里每个地址跑 `curl "<接口>?proxyip=<当前主 IP>:443"`，`success` 应为 `true`。
 
 ## 仓库结构
 

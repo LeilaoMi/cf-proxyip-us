@@ -119,7 +119,7 @@ Cloudflare Worker 需要：
 
 ## 线上现状
 
-- 分发（Worker）：https://list.leilaomi.cc.cd （除 `/`、`/health`、`/robots.txt` 外需签名 Cookie 或 HMAC Token，`/token` 需 Cookie）
+- 分发（Worker）：https://list.leilaomi.cc.cd （除 `/`、`/health`、`/robots.txt` 外需签名 Cookie 或 HMAC Token）
 - 实际 ProxyIP：`proxyip.leilaomi.cc.cd`，DNS-only 单 A 记录，不提供 HTTP 页面
 - 健康检查：https://list.leilaomi.cc.cd/health
 - KV：13 个 key，见 `docs/kv-manifest.json`
