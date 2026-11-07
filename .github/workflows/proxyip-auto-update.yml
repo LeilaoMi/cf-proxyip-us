@@ -43,8 +43,13 @@ jobs:
           node --check worker.js
 
       - name: Generate, validate, and test outputs
+        env:
+          # 表达式放环境变量、不直接插进 shell：值经 ${{ }} 传入环境是数据不是脚本，
+          # 再以 CHECK_APIS="$CHECK_APIS_VALUE" 只赋给 build_dataset.py 这一行；
+          # 既防 $(...) 注入，测试步骤也不继承 CHECK_APIS。
+          CHECK_APIS_VALUE: ${{ vars.CHECK_APIS != '' && vars.CHECK_APIS || 'https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check' }}
         run: |
-          python3 build_dataset.py
+          CHECK_APIS="$CHECK_APIS_VALUE" python3 build_dataset.py
           python3 scripts/validate_outputs.py
           python3 -m unittest discover -s tests
 
