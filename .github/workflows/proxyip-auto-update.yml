@@ -23,9 +23,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PROXYIP_HMAC_SECRET: ${{ secrets.PROXYIP_HMAC_SECRET }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # 检测接口改走仓库变量：Settings -> Variables 设 CHECK_APIS（逗号分隔）后，
-      # 定时任务改用自有检测地址；未设置时回落到 build_dataset.py 的 cmliu 默认，行为不变。
-      CHECK_APIS: ${{ vars.CHECK_APIS != '' && vars.CHECK_APIS || 'https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,7 +44,10 @@ jobs:
 
       - name: Generate, validate, and test outputs
         run: |
-          python3 build_dataset.py
+          # CHECK_APIS 只给 build_dataset.py：仓库变量（Settings -> Variables，逗号分隔），
+          # 设了就用自有检测地址，未设置时回落到 cmliu 默认；测试步骤不继承该变量，
+          # 否则 tests/test_checker_failover.py 对默认地址的断言会失败。
+          CHECK_APIS="${{ vars.CHECK_APIS != '' && vars.CHECK_APIS || 'https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check' }}" python3 build_dataset.py
           python3 scripts/validate_outputs.py
           python3 -m unittest discover -s tests
 
