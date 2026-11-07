@@ -23,6 +23,9 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PROXYIP_HMAC_SECRET: ${{ secrets.PROXYIP_HMAC_SECRET }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 检测接口改走仓库变量：Settings -> Variables 设 CHECK_APIS（逗号分隔）后，
+      # 定时任务改用自有检测地址；未设置时回落到 build_dataset.py 的 cmliu 默认，行为不变。
+      CHECK_APIS: ${{ vars.CHECK_APIS != '' && vars.CHECK_APIS || 'https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
