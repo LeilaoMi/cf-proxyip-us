@@ -69,7 +69,7 @@ CHECKER_RETRY_DELAY_S = float(os.environ.get("CHECKER_RETRY_DELAY_S", "30"))
 CHECKER_RETRY_WORKERS = int(os.environ.get("CHECKER_RETRY_WORKERS", "6"))
 # 重试轮总预算：超过后不再发起新请求，未重试的 IP 保留首轮结果（在途请求最多再跑一个单 IP 超时）
 CHECKER_RETRY_BUDGET_S = float(os.environ.get("CHECKER_RETRY_BUDGET_S", "300"))
-# 首轮检测结束时脚本已运行超过该秒数则跳过重试，为后续探测/吞吐/部署预留 CI 时间（job 上限 45 分钟）
+# 重试（含退避）必须在脚本启动后该秒数内结束，为后续探测/吞吐/校验/部署和环境准备预留 CI 时间（job 上限 45 分钟）
 CHECKER_RETRY_CUTOFF_S = float(os.environ.get("CHECKER_RETRY_CUTOFF_S", "1200"))
 SCRIPT_STARTED = time.monotonic()
 MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
@@ -368,6 +368,22 @@ def _remaining(deadline: float | None) -> float:
     return deadline - time.monotonic()
 
 
+def _read_bounded(res, deadline: float | None, limit: int = 1 << 20) -> bytes:
+    """分块读取响应体；有 deadline 时总时长不超过 deadline，避免慢速发送拖住重试轮。"""
+    chunks, total = [], 0
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DeadlineExceeded("response body read")
+        chunk = res.read(8192)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= limit:
+            break
+    return b"".join(chunks)
+
+
 def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: float | None = None) -> dict:
     """调用一个检测接口；网络/HTTP 错误标记 checker_error。
     给了 deadline 时，每次请求的超时不超过剩余时间，过期则抛 DeadlineExceeded。"""
@@ -382,11 +398,13 @@ def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: flo
         try:
             req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
             with urlopen(req, timeout=min(TIMEOUT, left)) as res:
-                data = json.loads(res.read().decode("utf-8", "ignore"))
+                data = json.loads(_read_bounded(res, deadline).decode("utf-8", "ignore"))
             data["latency_ms"] = int((time.monotonic() - start) * 1000)
             data["ip"] = ip
             data["checker"] = api
             return data
+        except DeadlineExceeded:
+            raise
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}"
             code = getattr(exc, "code", None)
@@ -403,16 +421,28 @@ def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: flo
     return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000, "checker": api, "checker_error": True}
 
 
-def check_https_direct(ip: str, timeout: int = 8) -> dict:
-    """直接 HTTPS 测试 ProxyIP，作为 cmliu API 的备用验证方式"""
+def check_https_direct(ip: str, timeout: int = 8, deadline: float | None = None) -> dict:
+    """直接 HTTPS 测试 ProxyIP，作为 cmliu API 的备用验证方式。
+    给了 deadline 时各阶段超时不超过剩余时间，过期抛 DeadlineExceeded。"""
     start = time.monotonic()
+
+    def _left() -> float:
+        if deadline is None:
+            return float(timeout)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise DeadlineExceeded(ip)
+        return min(float(timeout), left)
+
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        sock = socket.create_connection((ip, 443), timeout=timeout)
+        sock = socket.create_connection((ip, 443), timeout=_left())
+        sock.settimeout(_left())
         ssock = ctx.wrap_socket(sock, server_hostname="speed.cloudflare.com")
+        ssock.settimeout(_left())
         ssock.sendall(
             b"GET /cdn-cgi/trace HTTP/1.1\r\n"
             b"Host: speed.cloudflare.com\r\n"
@@ -423,12 +453,15 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
         )
 
         response = b""
-        while True:
-            chunk = ssock.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-        ssock.close()
+        try:
+            while True:
+                ssock.settimeout(_left())
+                chunk = ssock.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+        finally:
+            ssock.close()
 
         latency = int((time.monotonic() - start) * 1000)
         resp_text = response.decode("utf-8", errors="ignore")
@@ -458,6 +491,8 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
             }
         return {"ip": ip, "success": False, "error": "not_cloudflare", "latency_ms": latency}
 
+    except DeadlineExceeded:
+        raise
     except Exception as exc:
         return {"ip": ip, "success": False, "error": str(exc)[:100], "latency_ms": int((time.monotonic() - start) * 1000)}
 
@@ -481,7 +516,7 @@ def check_with_fallback(ip: str, deadline: float | None = None) -> dict:
         left = _remaining(deadline)
         if left <= 1:
             raise DeadlineExceeded(ip)
-        direct_result = check_https_direct(ip, timeout=int(min(8, left)) or 1)
+        direct_result = check_https_direct(ip, deadline=deadline)
         if direct_result.get("success"):
             return direct_result
 
@@ -1540,17 +1575,19 @@ def retry_checker_faults(results: list[dict]) -> list[dict]:
     if not retry_ips:
         return results
     log_checker_errors(results, "first pass")
-    elapsed = time.monotonic() - SCRIPT_STARTED
-    if elapsed > CHECKER_RETRY_CUTOFF_S:
-        print(f"skip checker retry: script already ran {elapsed:.0f}s > {CHECKER_RETRY_CUTOFF_S:.0f}s", flush=True)
+    hard_stop = SCRIPT_STARTED + CHECKER_RETRY_CUTOFF_S
+    available = hard_stop - time.monotonic() - CHECKER_RETRY_DELAY_S
+    budget = min(CHECKER_RETRY_BUDGET_S, available)
+    if budget < 30:
+        print(f"skip checker retry: only {max(0, available):.0f}s left before retry cutoff", flush=True)
         return results
     print(
         f"retrying {len(retry_ips)} checker-error IPs after {CHECKER_RETRY_DELAY_S:.0f}s "
-        f"with {CHECKER_RETRY_WORKERS} workers, budget {CHECKER_RETRY_BUDGET_S:.0f}s",
+        f"with {CHECKER_RETRY_WORKERS} workers, budget {budget:.0f}s",
         flush=True,
     )
     time.sleep(CHECKER_RETRY_DELAY_S)
-    deadline = time.monotonic() + CHECKER_RETRY_BUDGET_S
+    deadline = time.monotonic() + budget
     retried = {r["ip"]: r for r in run_checks(retry_ips, CHECKER_RETRY_WORKERS, label="retried", deadline=deadline)}
     return [retried.get(r["ip"], r) if r.get("checker_error") else r for r in results]
 

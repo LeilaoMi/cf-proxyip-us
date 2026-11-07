@@ -136,6 +136,34 @@ class CheckerFailoverTests(unittest.TestCase):
         rc.assert_not_called()
         self.assertEqual(out, first)
 
+    def test_body_read_stops_at_deadline(self):
+        """slow drip body read is bounded by deadline."""
+        class Drip:
+            def read(self, n):
+                return b"x"
+        with self.assertRaises(bd.DeadlineExceeded):
+            bd._read_bounded(Drip(), bd.time.monotonic() + 0.05)
+
+    def test_direct_https_raises_when_deadline_passed(self):
+        """direct https check honours an expired deadline."""
+        with mock.patch.object(bd.socket, "create_connection") as cc:
+            with self.assertRaises(bd.DeadlineExceeded):
+                bd.check_https_direct("1.2.3.4", deadline=bd.time.monotonic() - 1)
+        cc.assert_not_called()
+
+    def test_retry_budget_shrinks_to_remaining_job_time(self):
+        """retry budget never exceeds time left before the cutoff."""
+        first = [{"ip": "2.2.2.2", "success": False, "checker_error": True}]
+        seen = {}
+        def fake_run(ips, workers, label="checked", deadline=None):
+            seen["left"] = deadline - bd.time.monotonic()
+            return []
+        with mock.patch.object(bd, "SCRIPT_STARTED", bd.time.monotonic() - (bd.CHECKER_RETRY_CUTOFF_S - 100)), \
+             mock.patch.object(bd, "CHECKER_RETRY_DELAY_S", 0), mock.patch.object(bd, "run_checks", fake_run), \
+             mock.patch("builtins.print"):
+            bd.retry_checker_faults(first)
+        self.assertLessEqual(seen["left"], 100)
+
 
 if __name__ == "__main__":
     unittest.main()
