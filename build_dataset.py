@@ -69,6 +69,9 @@ CHECKER_RETRY_DELAY_S = float(os.environ.get("CHECKER_RETRY_DELAY_S", "30"))
 CHECKER_RETRY_WORKERS = int(os.environ.get("CHECKER_RETRY_WORKERS", "6"))
 # 重试轮总预算：超过后不再发起新请求，未重试的 IP 保留首轮结果（在途请求最多再跑一个单 IP 超时）
 CHECKER_RETRY_BUDGET_S = float(os.environ.get("CHECKER_RETRY_BUDGET_S", "300"))
+# 首轮检测结束时脚本已运行超过该秒数则跳过重试，为后续探测/吞吐/部署预留 CI 时间（job 上限 45 分钟）
+CHECKER_RETRY_CUTOFF_S = float(os.environ.get("CHECKER_RETRY_CUTOFF_S", "1200"))
+SCRIPT_STARTED = time.monotonic()
 MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
 TIMEOUT = int(os.environ.get("PROXYIP_CHECK_TIMEOUT", "35"))
 MAX_CANDIDATES = int(os.environ.get("PROXYIP_MAX_CANDIDATES", "1400"))
@@ -354,15 +357,31 @@ def checker_fault(data: dict) -> bool:
     return any(m in blob for m in CHECKER_FAULT_MARKERS)
 
 
-def check_cmliu(ip: str, retries: int = 2, api: str | None = None) -> dict:
+class DeadlineExceeded(Exception):
+    """重试轮预算用尽，本 IP 的检测未完成。"""
+
+
+def _remaining(deadline: float | None) -> float:
+    """距 deadline 的剩余秒数；没有 deadline 时返回 TIMEOUT。"""
+    if deadline is None:
+        return float(TIMEOUT)
+    return deadline - time.monotonic()
+
+
+def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: float | None = None) -> dict:
+    """调用一个检测接口；网络/HTTP 错误标记 checker_error。
+    给了 deadline 时，每次请求的超时不超过剩余时间，过期则抛 DeadlineExceeded。"""
     api = api or CHECK_API
     url = f"{api}?proxyip={ip}"
     last_err = None
     for attempt in range(retries):
+        left = _remaining(deadline)
+        if left <= 1:
+            raise DeadlineExceeded(ip)
         start = time.monotonic()
         try:
             req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-            with urlopen(req, timeout=TIMEOUT) as res:
+            with urlopen(req, timeout=min(TIMEOUT, left)) as res:
                 data = json.loads(res.read().decode("utf-8", "ignore"))
             data["latency_ms"] = int((time.monotonic() - start) * 1000)
             data["ip"] = ip
@@ -378,6 +397,8 @@ def check_cmliu(ip: str, retries: int = 2, api: str | None = None) -> dict:
                     pass
             last_err = detail
             if attempt < retries - 1:
+                if _remaining(deadline) <= 1 + attempt:
+                    raise DeadlineExceeded(ip)
                 time.sleep(1 + attempt)
     return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000, "checker": api, "checker_error": True}
 
@@ -440,11 +461,12 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
     except Exception as exc:
         return {"ip": ip, "success": False, "error": str(exc)[:100], "latency_ms": int((time.monotonic() - start) * 1000)}
 
-def check_with_fallback(ip: str) -> dict:
-    """先用 cmliu API，失败则用直接 HTTPS 测试"""
+def check_with_fallback(ip: str, deadline: float | None = None) -> dict:
+    """先用 cmliu API（按 CHECK_APIS 顺序），失败则用直接 HTTPS 测试。
+    deadline 过期时抛 DeadlineExceeded，由调用方保留之前的结果。"""
     result = {}
     for api in CHECK_APIS:
-        result = check_cmliu(ip, api=api)
+        result = check_cmliu(ip, api=api, deadline=deadline)
         if not checker_fault(result):
             break
     if checker_fault(result):
@@ -456,7 +478,10 @@ def check_with_fallback(ip: str) -> dict:
     
     # 如果 cmliu API 失败或超时，尝试直接 HTTPS 测试
     if result.get("success") is False and ("timeout" in str(result.get("error", "")).lower() or "urlopen" in str(result.get("error", "")).lower()):
-        direct_result = check_https_direct(ip)
+        left = _remaining(deadline)
+        if left <= 1:
+            raise DeadlineExceeded(ip)
+        direct_result = check_https_direct(ip, timeout=int(min(8, left)) or 1)
         if direct_result.get("success"):
             return direct_result
 
@@ -1485,7 +1510,10 @@ def run_checks(ips: list[str], workers: int, label: str = "checked", deadline: f
     def _one(ip: str) -> dict | None:
         if deadline is not None and time.monotonic() >= deadline:
             return None
-        return check_with_fallback(ip)
+        try:
+            return check_with_fallback(ip) if deadline is None else check_with_fallback(ip, deadline=deadline)
+        except DeadlineExceeded:
+            return None
 
     skipped = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -1512,6 +1540,10 @@ def retry_checker_faults(results: list[dict]) -> list[dict]:
     if not retry_ips:
         return results
     log_checker_errors(results, "first pass")
+    elapsed = time.monotonic() - SCRIPT_STARTED
+    if elapsed > CHECKER_RETRY_CUTOFF_S:
+        print(f"skip checker retry: script already ran {elapsed:.0f}s > {CHECKER_RETRY_CUTOFF_S:.0f}s", flush=True)
+        return results
     print(
         f"retrying {len(retry_ips)} checker-error IPs after {CHECKER_RETRY_DELAY_S:.0f}s "
         f"with {CHECKER_RETRY_WORKERS} workers, budget {CHECKER_RETRY_BUDGET_S:.0f}s",
