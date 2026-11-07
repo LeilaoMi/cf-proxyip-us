@@ -49,19 +49,29 @@ PROXYIP_DOMAIN_SOURCES = [
 ]
 
 CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4"
-# 第三方 ProxyIP 检测接口，按顺序尝试；前一个出错或自身故障时换下一个。
-# 2026-11-06 api.090227.xyz 迁到 Cloudflare Snippets 后无法 connect()，全部误判失败。
+# 第三方 ProxyIP 检测接口（cmliu/CF-Workers-CheckProxyIP），按顺序尝试；前一个出错或自身故障时换下一个。
+# 2026-10-21 上游加入 API_HOST，官方页面改为调用 api.check.proxyip.cmliussss.net，
+# 但截至 2026-11-07 该域名与 api.090227.xyz 一样跑在 Cloudflare Snippets 上（connect() 不可用），
+# 只保留作备用以便上游修好后自动生效；api.090227.xyz 已移除。
 CHECK_APIS = [
     u.strip()
     for u in os.environ.get(
         "CHECK_APIS",
-        "https://check.proxyip.cmliussss.net/check,https://api.090227.xyz/check",
+        "https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check",
     ).split(",")
     if u.strip()
 ]
 CHECK_API = CHECK_APIS[0]
 CHECKER_FAULT_MARKERS = ("not available in snippets", "connect() is not available")
 USER_AGENT = "cf-proxyip-stable-builder/2.0"
+# 第一轮出现接口故障的 IP，退避后用较低并发再测一轮
+CHECKER_RETRY_DELAY_S = float(os.environ.get("CHECKER_RETRY_DELAY_S", "30"))
+CHECKER_RETRY_WORKERS = int(os.environ.get("CHECKER_RETRY_WORKERS", "6"))
+# 重试轮总预算：超过后不再发起新请求，未重试的 IP 保留首轮结果（在途请求最多再跑一个单 IP 超时）
+CHECKER_RETRY_BUDGET_S = float(os.environ.get("CHECKER_RETRY_BUDGET_S", "300"))
+# 重试（含退避）必须在脚本启动后该秒数内结束，为后续探测/吞吐/校验/部署和环境准备预留 CI 时间（job 上限 45 分钟）
+CHECKER_RETRY_CUTOFF_S = float(os.environ.get("CHECKER_RETRY_CUTOFF_S", "1200"))
+SCRIPT_STARTED = time.monotonic()
 MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
 TIMEOUT = int(os.environ.get("PROXYIP_CHECK_TIMEOUT", "35"))
 MAX_CANDIDATES = int(os.environ.get("PROXYIP_MAX_CANDIDATES", "1400"))
@@ -347,37 +357,93 @@ def checker_fault(data: dict) -> bool:
     return any(m in blob for m in CHECKER_FAULT_MARKERS)
 
 
-def check_cmliu(ip: str, retries: int = 2, api: str | None = None) -> dict:
+class DeadlineExceeded(Exception):
+    """重试轮预算用尽，本 IP 的检测未完成。"""
+
+
+def _remaining(deadline: float | None) -> float:
+    """距 deadline 的剩余秒数；没有 deadline 时返回 TIMEOUT。"""
+    if deadline is None:
+        return float(TIMEOUT)
+    return deadline - time.monotonic()
+
+
+def _read_bounded(res, deadline: float | None, limit: int = 1 << 20) -> bytes:
+    """分块读取响应体；有 deadline 时总时长不超过 deadline，避免慢速发送拖住重试轮。"""
+    chunks, total = [], 0
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise DeadlineExceeded("response body read")
+        chunk = res.read(8192)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total >= limit:
+            break
+    return b"".join(chunks)
+
+
+def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: float | None = None) -> dict:
+    """调用一个检测接口；网络/HTTP 错误标记 checker_error。
+    给了 deadline 时，每次请求的超时不超过剩余时间，过期则抛 DeadlineExceeded。"""
     api = api or CHECK_API
     url = f"{api}?proxyip={ip}"
     last_err = None
     for attempt in range(retries):
+        left = _remaining(deadline)
+        if left <= 1:
+            raise DeadlineExceeded(ip)
         start = time.monotonic()
         try:
             req = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-            with urlopen(req, timeout=TIMEOUT) as res:
-                data = json.loads(res.read().decode("utf-8", "ignore"))
+            with urlopen(req, timeout=min(TIMEOUT, left)) as res:
+                data = json.loads(_read_bounded(res, deadline).decode("utf-8", "ignore"))
             data["latency_ms"] = int((time.monotonic() - start) * 1000)
             data["ip"] = ip
             data["checker"] = api
             return data
+        except DeadlineExceeded:
+            raise
         except Exception as exc:
-            last_err = exc
+            detail = f"{type(exc).__name__}: {exc}"
+            code = getattr(exc, "code", None)
+            # 重试轮（有 deadline）不读错误体，避免慢速错误响应越过截止时间
+            if code is not None and deadline is None:
+                try:
+                    detail += f" body={exc.read(200).decode('utf-8', 'ignore')!r}"
+                except Exception:
+                    pass
+            last_err = detail
             if attempt < retries - 1:
-                time.sleep(1)
+                if _remaining(deadline) <= 1 + attempt:
+                    raise DeadlineExceeded(ip)
+                time.sleep(1 + attempt)
     return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000, "checker": api, "checker_error": True}
 
 
-def check_https_direct(ip: str, timeout: int = 8) -> dict:
-    """直接 HTTPS 测试 ProxyIP，作为 cmliu API 的备用验证方式"""
+def check_https_direct(ip: str, timeout: int = 8, deadline: float | None = None) -> dict:
+    """直接 HTTPS 测试 ProxyIP，作为 cmliu API 的备用验证方式。
+    给了 deadline 时各阶段超时不超过剩余时间，过期抛 DeadlineExceeded。"""
     start = time.monotonic()
+
+    def _left() -> float:
+        if deadline is None:
+            return float(timeout)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise DeadlineExceeded(ip)
+        return min(float(timeout), left)
+
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        sock = socket.create_connection((ip, 443), timeout=timeout)
+        sock = socket.create_connection((ip, 443), timeout=_left())
+        sock.settimeout(_left())
         ssock = ctx.wrap_socket(sock, server_hostname="speed.cloudflare.com")
+        ssock.settimeout(_left())
         ssock.sendall(
             b"GET /cdn-cgi/trace HTTP/1.1\r\n"
             b"Host: speed.cloudflare.com\r\n"
@@ -388,12 +454,15 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
         )
 
         response = b""
-        while True:
-            chunk = ssock.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-        ssock.close()
+        try:
+            while True:
+                ssock.settimeout(_left())
+                chunk = ssock.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+        finally:
+            ssock.close()
 
         latency = int((time.monotonic() - start) * 1000)
         resp_text = response.decode("utf-8", errors="ignore")
@@ -423,14 +492,17 @@ def check_https_direct(ip: str, timeout: int = 8) -> dict:
             }
         return {"ip": ip, "success": False, "error": "not_cloudflare", "latency_ms": latency}
 
+    except DeadlineExceeded:
+        raise
     except Exception as exc:
         return {"ip": ip, "success": False, "error": str(exc)[:100], "latency_ms": int((time.monotonic() - start) * 1000)}
 
-def check_with_fallback(ip: str) -> dict:
-    """先用 cmliu API，失败则用直接 HTTPS 测试"""
+def check_with_fallback(ip: str, deadline: float | None = None) -> dict:
+    """先用 cmliu API（按 CHECK_APIS 顺序），失败则用直接 HTTPS 测试。
+    deadline 过期时抛 DeadlineExceeded，由调用方保留之前的结果。"""
     result = {}
     for api in CHECK_APIS:
-        result = check_cmliu(ip, api=api)
+        result = check_cmliu(ip, api=api, deadline=deadline)
         if not checker_fault(result):
             break
     if checker_fault(result):
@@ -442,7 +514,10 @@ def check_with_fallback(ip: str) -> dict:
     
     # 如果 cmliu API 失败或超时，尝试直接 HTTPS 测试
     if result.get("success") is False and ("timeout" in str(result.get("error", "")).lower() or "urlopen" in str(result.get("error", "")).lower()):
-        direct_result = check_https_direct(ip)
+        left = _remaining(deadline)
+        if left <= 1:
+            raise DeadlineExceeded(ip)
+        direct_result = check_https_direct(ip, deadline=deadline)
         if direct_result.get("success"):
             return direct_result
 
@@ -1461,6 +1536,79 @@ def probe_only_main() -> None:
     print("commit docs/probe_local.json so CI can merge it as weighted data", flush=True)
 
 
+def run_checks(ips: list[str], workers: int, label: str = "checked", deadline: float | None = None) -> list[dict]:
+    """并发调用检测接口，返回每个 IP 的结果（顺序不保证）。
+    给了 deadline（time.monotonic()）时，过期后不再发起新请求，这些 IP 不出现在结果里。"""
+    out: list[dict] = []
+    if not ips:
+        return out
+
+    def _one(ip: str) -> dict | None:
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        try:
+            return check_with_fallback(ip) if deadline is None else check_with_fallback(ip, deadline=deadline)
+        except DeadlineExceeded:
+            return None
+
+    skipped = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(_one, ip) for ip in ips]
+        valid = 0
+        for done, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            item = fut.result()
+            if item is None:
+                skipped += 1
+                continue
+            out.append(item)
+            if item.get("success") is True and item.get("supports_ipv4") is True:
+                valid += 1
+            if done % 25 == 0 or done == len(ips):
+                print(f"{label} {done}/{len(ips)} ipv4_valid={valid}", flush=True)
+    if skipped:
+        print(f"{label}: budget exhausted, {skipped}/{len(ips)} IPs not attempted", flush=True)
+    return out
+
+
+def retry_checker_faults(results: list[dict]) -> list[dict]:
+    """对首轮接口故障的 IP 退避后低并发重测；成功结果不动，故障结果仅在重测拿到结果时替换。"""
+    retry_ips = [r["ip"] for r in results if r.get("checker_error")]
+    if not retry_ips:
+        return results
+    log_checker_errors(results, "first pass")
+    hard_stop = SCRIPT_STARTED + CHECKER_RETRY_CUTOFF_S
+    available = hard_stop - time.monotonic() - CHECKER_RETRY_DELAY_S
+    budget = min(CHECKER_RETRY_BUDGET_S, available)
+    if budget < 30:
+        print(f"skip checker retry: only {max(0, available):.0f}s left before retry cutoff", flush=True)
+        return results
+    print(
+        f"retrying {len(retry_ips)} checker-error IPs after {CHECKER_RETRY_DELAY_S:.0f}s "
+        f"with {CHECKER_RETRY_WORKERS} workers, budget {budget:.0f}s",
+        flush=True,
+    )
+    time.sleep(CHECKER_RETRY_DELAY_S)
+    deadline = time.monotonic() + budget
+    retried = {r["ip"]: r for r in run_checks(retry_ips, CHECKER_RETRY_WORKERS, label="retried", deadline=deadline)}
+    return [retried.get(r["ip"], r) if r.get("checker_error") else r for r in results]
+
+
+def log_checker_errors(results: list[dict], stage: str, limit: int = 5) -> None:
+    """打印接口故障的样本，便于从 Actions 日志直接定位原因。"""
+    counts: dict[str, int] = {}
+    for r in results:
+        if not r.get("checker_error"):
+            continue
+        err = str(r.get("error") or "")
+        if not err:
+            blob = json.dumps(r.get("probe_results") or {}, ensure_ascii=False)
+            err = next((m for m in CHECKER_FAULT_MARKERS if m in blob.lower()), "checker fault")
+        key = f"{r.get('checker')}: {err[:200]}"
+        counts[key] = counts.get(key, 0) + 1
+    for key, n in sorted(counts.items(), key=lambda kv: -kv[1])[:limit]:
+        print(f"checker error sample ({stage}) x{n}: {key}", flush=True)
+
+
 def main() -> None:
     if PROBE_ONLY:
         probe_only_main()
@@ -1471,25 +1619,22 @@ def main() -> None:
     by_ip = {x["ip"]: x for x in candidates}
     ip_history = load_ip_history()
     print(f"stability history loaded: {len(ip_history)} ips")
-    results = []
+    results = run_checks([row["ip"] for row in candidates], MAX_WORKERS)
+    results = retry_checker_faults(results)
+
     verified = []
     success_not_ipv4 = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {pool.submit(check_with_fallback, row["ip"]): row["ip"] for row in candidates}
-        done = 0
-        for fut in concurrent.futures.as_completed(futures):
-            item = fut.result()
-            results.append(item)
-            if item.get("success") is True and item.get("supports_ipv4") is True:
-                verified.append(enrich(item, by_ip.get(item["ip"]), stability_for(ip_history, item["ip"])))
-            elif item.get("success") is True:
-                success_not_ipv4 += 1
-            done += 1
-            if done % 25 == 0 or done == len(candidates):
-                print(f"checked {done}/{len(candidates)} ipv4_valid={len(verified)}")
+    for item in results:
+        if item.get("success") is True and item.get("supports_ipv4") is True:
+            verified.append(enrich(item, by_ip.get(item["ip"]), stability_for(ip_history, item["ip"])))
+        elif item.get("success") is True:
+            success_not_ipv4 += 1
+    print(f"ipv4_valid={len(verified)}")
 
     checker_errors = sum(1 for r in results if r.get("checker_error"))
     print(f"checker errors: {checker_errors}/{len(results)}")
+    if checker_errors:
+        log_checker_errors(results, "final")
     if results and not verified and checker_errors >= len(results) * 0.9:
         raise SystemExit(
             f"all ProxyIP checkers look broken ({checker_errors}/{len(results)} checker errors via {CHECK_APIS}); "
