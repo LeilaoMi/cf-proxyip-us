@@ -164,6 +164,16 @@ class CheckerFailoverTests(unittest.TestCase):
             bd.retry_checker_faults(first)
         self.assertLessEqual(seen["left"], 100)
 
+    def test_http_error_body_not_read_under_deadline(self):
+        """error body is skipped during the deadline-bound retry pass."""
+        api = "https://example.test/check"
+        body = mock.Mock()
+        error = HTTPError(api, 429, "Too Many Requests", None, body)
+        with mock.patch.object(bd, "urlopen", side_effect=error):
+            result = bd.check_cmliu("1.2.3.4", retries=1, api=api, deadline=bd.time.monotonic() + 30)
+        body.read.assert_not_called()
+        self.assertIn("429", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

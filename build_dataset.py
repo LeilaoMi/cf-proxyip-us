@@ -408,7 +408,8 @@ def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: flo
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}"
             code = getattr(exc, "code", None)
-            if code is not None:
+            # 重试轮（有 deadline）不读错误体，避免慢速错误响应越过截止时间
+            if code is not None and deadline is None:
                 try:
                     detail += f" body={exc.read(200).decode('utf-8', 'ignore')!r}"
                 except Exception:
