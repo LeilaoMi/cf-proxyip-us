@@ -119,8 +119,9 @@ Cloudflare Worker 需要：
 
 ## 线上现状
 
-- live：https://proxyip.leilaomi.cc.cd
-- status：https://proxyip.leilaomi.cc.cd/status
-- current：https://proxyip.leilaomi.cc.cd/current.txt
-- KV：13 个 key，含 `current`、`standby`、`top5`、`full`、`ip_history`、`state`
+- 分发（Worker）：https://list.leilaomi.cc.cd （除 `/`、`/health`、`/robots.txt` 外需签名 Cookie 或 HMAC Token，`/token` 需 Cookie）
+- 实际 ProxyIP：`proxyip.leilaomi.cc.cd`，DNS-only 单 A 记录，不提供 HTTP 页面
+- 健康检查：https://list.leilaomi.cc.cd/health
+- KV：13 个 key，见 `docs/kv-manifest.json`
+- 检测接口：`CHECK_APIS`，默认 `check.proxyip.cmliussss.net` → `api.check.proxyip.cmliussss.net`；`api.090227.xyz` 已失效移除。接口变化先看 README「验证」和「排障指南 6」
 - 当前主 IP、候选数量、延迟、吞吐以 `current.txt` 和 `status` 为准，不要写死在文档里
