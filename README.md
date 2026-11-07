@@ -126,10 +126,10 @@ Cloudflare：Worker cf-proxyip-us（只读 KV 分发，不做扫描）· KV PROX
 - 每个候选调用 `<CHECK_API>?proxyip=<ip>`（并发 24，单次超时 35 秒，每个接口最多试 2 次），读取 `probe_results.ipv4.exit` 里的国家、ASN、colo 和 Cloudflare bot management 字段。
 - **接口故障转移**：网络 / HTTP 错误，或返回 `connect() is not available` 这类接口自身故障时，换下一个接口；候选本身不通（如 connection refused）不换。
 - **退避重试**：第一轮仍是接口故障的 IP，等 `CHECKER_RETRY_DELAY_S`（30 秒）后用 `CHECKER_RETRY_WORKERS`（6）并发再测一轮。重试轮总时长不超过 `CHECKER_RETRY_BUDGET_S`（300 秒），且必须在脚本启动后 `CHECKER_RETRY_CUTOFF_S`（1200 秒）内结束；每次请求、响应体读取和直连探测都受这个截止时间约束，没测完的 IP 保留第一轮结果。
-- **错误样本**：接口故障按「接口: 错误」分组打印前 5 条。样本只记录每个 IP 最后尝试的那个接口，前面接口的错误会被覆盖（含 HTTP 状态码和响应体前 200 字节，重试轮不读响应体），直接在 Actions 日志里定位。
+- **错误样本**：接口故障按「接口: 错误」分组打印前 5 条。样本只记录每个 IP 最终停下的那个接口，前面接口的错误会被覆盖（含 HTTP 状态码和响应体前 200 字节，重试轮不读响应体），直接在 Actions 日志里定位。
 - **故障保护**：没有任何有效 IP 且 ≥90% 结果是接口故障时，脚本以 `all ProxyIP checkers look broken` 退出，不发布空列表，线上数据保持不变。
 - 只接受 `success=true` **且** `supports_ipv4=true`。出口走 IPv6 的 `ipv6_only` 代理目前会被丢弃（通常约占验证成功数的一半）。
-- **最后一个**接口返回 `success=false` 且错误文本含 `timeout` 或 `urlopen` 时，退回直连 HTTPS 探测（`direct_https`）；前面的接口返回什么不影响这个判断，响应体读取阶段的连接重置等不含这两个词的错误也不会回退。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，在 7 天成功率里按**失败**计（所以接口长时间故障会拉低历史成功率）。
+- 接口依次尝试，遇到第一个**不是接口故障**的结果就停；用这个最终结果判断：`success=false` 且错误文本含 `timeout` 或 `urlopen` 时，退回直连 HTTPS 探测（`direct_https`）。响应体读取阶段的连接重置等不含这两个词的错误不会回退。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，在 7 天成功率里按**失败**计（所以接口长时间故障会拉低历史成功率）。
 
 ## 排序与测速：四个阶段
 
@@ -393,9 +393,9 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 
 先在日志里搜 `checker errors` 和 `checker error sample`：
 
-- `checker errors: N/N` 加 `all ProxyIP checkers look broken`：检测接口全挂，线上数据没动。看样本里的错误：`connect() is not available in Snippets` 表示**样本里那个接口**已改成 Snippets、不会自己恢复；超时、5xx、429 一般是临时故障，下一轮多半自愈。样本只反映最后尝试的接口（通常是备用），改 `CHECK_APIS` 前先用下面的 curl 逐个测一遍主接口。
+- `checker errors: N/N` 加 `all ProxyIP checkers look broken`：检测接口全挂，线上数据没动。看样本里的错误：`connect() is not available in Snippets` 表示**样本里那个接口**已改成 Snippets、不会自己恢复；超时、5xx、429 一般是临时故障，下一轮多半自愈。样本只反映最终停下的接口（全故障时就是最后一个、通常是备用），改 `CHECK_APIS` 前先用下面的 curl 逐个测一遍主接口。
 - `docs/all.txt has too few valid IPs`：有效 IP 少于 5 个。若 `checker errors` 不高，说明候选本身大面积失效或上游判定变严，去看候选来源。
-- 手动验证接口：对 `CHECK_APIS` 里每个地址跑 `curl "<接口>?proxyip=<当前主 IP>:443"`。返回 JSON 且 `success=true`、`supports_ipv4=true` 说明接口正常、IP 也会被收录；`success=false` 但错误里没有 `connect() is not available` 之类的接口故障特征，只说明这个 IP 没过，接口本身正常，可以换几个 IP 再试；HTTP 错误、超时或 Snippets 报错才是接口故障。
+- 手动验证接口：对 `CHECK_APIS` 里每个地址跑 `curl "<接口>?proxyip=<当前主 IP>:443"`。返回 JSON 且 `success=true`、`supports_ipv4=true` 说明接口正常、IP 通过了验证（是否收录还要过目标地区过滤和同 ASN 数量上限）；`success=false` 但错误里没有 `connect() is not available` 之类的接口故障特征，只说明这个 IP 没过，接口本身正常，可以换几个 IP 再试；HTTP 错误、超时或 Snippets 报错才是接口故障。
 
 ## 仓库结构
 
