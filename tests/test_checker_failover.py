@@ -1,5 +1,7 @@
+from io import BytesIO
 import unittest
 from unittest import mock
+from urllib.error import HTTPError
 
 import build_dataset as bd
 
@@ -61,6 +63,39 @@ class CheckerFailoverTests(unittest.TestCase):
         with mock.patch("builtins.print") as p:
             bd.log_checker_errors(rows, "t")
         self.assertIn("x3", p.call_args_list[0].args[0])
+
+    def test_check_cmliu_includes_http_error_body(self):
+        api = "https://example.test/check"
+        error = HTTPError(api, 429, "Too Many Requests", None, BytesIO(b"rate limit exceeded"))
+        with mock.patch.object(bd, "urlopen", side_effect=error):
+            result = bd.check_cmliu("1.2.3.4", retries=1, api=api)
+        self.assertTrue(result["checker_error"])
+        self.assertIn("rate limit exceeded", result["error"])
+        self.assertIn("429", result["error"])
+
+    def test_retry_only_faulted_ips_and_keep_first_pass_success(self):
+        first = [
+            dict(GOOD, ip="1.1.1.1", checker="a"),
+            {"ip": "2.2.2.2", "success": False, "checker_error": True},
+            {"ip": "3.3.3.3", "success": False, "checker_error": True},
+        ]
+        seen = []
+        def fake_run(ips, workers, label="checked", deadline=None):
+            seen.extend(ips)
+            return [dict(GOOD, ip="2.2.2.2", checker="b")]  # 3.3.3.3 未在预算内重测
+        with mock.patch.object(bd, "run_checks", fake_run), mock.patch.object(bd.time, "sleep"), \
+             mock.patch("builtins.print"):
+            out = {r["ip"]: r for r in bd.retry_checker_faults(first)}
+        self.assertEqual(sorted(seen), ["2.2.2.2", "3.3.3.3"])
+        self.assertEqual(out["1.1.1.1"]["checker"], "a")
+        self.assertTrue(out["2.2.2.2"]["success"])
+        self.assertTrue(out["3.3.3.3"]["checker_error"])
+
+    def test_run_checks_stops_after_deadline(self):
+        with mock.patch.object(bd, "check_with_fallback", lambda ip: dict(GOOD, ip=ip)), \
+             mock.patch("builtins.print"):
+            out = bd.run_checks(["1.1.1.1", "2.2.2.2"], 1, deadline=bd.time.monotonic() - 1)
+        self.assertEqual(out, [])
 
 
 if __name__ == "__main__":

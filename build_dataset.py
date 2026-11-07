@@ -67,6 +67,8 @@ USER_AGENT = "cf-proxyip-stable-builder/2.0"
 # 第一轮出现接口故障的 IP，退避后用较低并发再测一轮
 CHECKER_RETRY_DELAY_S = float(os.environ.get("CHECKER_RETRY_DELAY_S", "30"))
 CHECKER_RETRY_WORKERS = int(os.environ.get("CHECKER_RETRY_WORKERS", "6"))
+# 重试轮总预算：超过后不再发起新请求，未重试的 IP 保留首轮结果（在途请求最多再跑一个单 IP 超时）
+CHECKER_RETRY_BUDGET_S = float(os.environ.get("CHECKER_RETRY_BUDGET_S", "300"))
 MAX_WORKERS = int(os.environ.get("PROXYIP_MAX_WORKERS", "24"))
 TIMEOUT = int(os.environ.get("PROXYIP_CHECK_TIMEOUT", "35"))
 MAX_CANDIDATES = int(os.environ.get("PROXYIP_MAX_CANDIDATES", "1400"))
@@ -1473,22 +1475,52 @@ def probe_only_main() -> None:
     print("commit docs/probe_local.json so CI can merge it as weighted data", flush=True)
 
 
-def run_checks(ips: list[str], workers: int, label: str = "checked") -> list[dict]:
-    """并发调用检测接口，返回每个 IP 的结果（顺序不保证）。"""
+def run_checks(ips: list[str], workers: int, label: str = "checked", deadline: float | None = None) -> list[dict]:
+    """并发调用检测接口，返回每个 IP 的结果（顺序不保证）。
+    给了 deadline（time.monotonic()）时，过期后不再发起新请求，这些 IP 不出现在结果里。"""
     out: list[dict] = []
     if not ips:
         return out
+
+    def _one(ip: str) -> dict | None:
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        return check_with_fallback(ip)
+
+    skipped = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(check_with_fallback, ip) for ip in ips]
+        futures = [pool.submit(_one, ip) for ip in ips]
         valid = 0
         for done, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             item = fut.result()
+            if item is None:
+                skipped += 1
+                continue
             out.append(item)
             if item.get("success") is True and item.get("supports_ipv4") is True:
                 valid += 1
             if done % 25 == 0 or done == len(ips):
                 print(f"{label} {done}/{len(ips)} ipv4_valid={valid}", flush=True)
+    if skipped:
+        print(f"{label}: budget exhausted, {skipped}/{len(ips)} IPs not attempted", flush=True)
     return out
+
+
+def retry_checker_faults(results: list[dict]) -> list[dict]:
+    """对首轮接口故障的 IP 退避后低并发重测；成功结果不动，故障结果仅在重测拿到结果时替换。"""
+    retry_ips = [r["ip"] for r in results if r.get("checker_error")]
+    if not retry_ips:
+        return results
+    log_checker_errors(results, "first pass")
+    print(
+        f"retrying {len(retry_ips)} checker-error IPs after {CHECKER_RETRY_DELAY_S:.0f}s "
+        f"with {CHECKER_RETRY_WORKERS} workers, budget {CHECKER_RETRY_BUDGET_S:.0f}s",
+        flush=True,
+    )
+    time.sleep(CHECKER_RETRY_DELAY_S)
+    deadline = time.monotonic() + CHECKER_RETRY_BUDGET_S
+    retried = {r["ip"]: r for r in run_checks(retry_ips, CHECKER_RETRY_WORKERS, label="retried", deadline=deadline)}
+    return [retried.get(r["ip"], r) if r.get("checker_error") else r for r in results]
 
 
 def log_checker_errors(results: list[dict], stage: str, limit: int = 5) -> None:
@@ -1518,13 +1550,7 @@ def main() -> None:
     ip_history = load_ip_history()
     print(f"stability history loaded: {len(ip_history)} ips")
     results = run_checks([row["ip"] for row in candidates], MAX_WORKERS)
-    retry_ips = [r["ip"] for r in results if r.get("checker_error")]
-    if retry_ips:
-        log_checker_errors(results, "first pass")
-        print(f"retrying {len(retry_ips)} checker-error IPs after {CHECKER_RETRY_DELAY_S:.0f}s with {CHECKER_RETRY_WORKERS} workers", flush=True)
-        time.sleep(CHECKER_RETRY_DELAY_S)
-        retried = {r["ip"]: r for r in run_checks(retry_ips, CHECKER_RETRY_WORKERS, label="retried")}
-        results = [retried.get(r["ip"], r) if r.get("checker_error") else r for r in results]
+    results = retry_checker_faults(results)
 
     verified = []
     success_not_ipv4 = 0
