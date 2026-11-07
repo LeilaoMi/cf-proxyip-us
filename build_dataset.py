@@ -1346,7 +1346,7 @@ def ip_history_success(item: dict) -> tuple[bool, int | None]:
     """success = 验证通过且本地握手成功，不受地区过滤和 ASN 截断影响。"""
     verified = item.get("success") is True and item.get("supports_ipv4") is True
     if item.get("method") == "direct_https" or item.get("fallback_unverified"):
-        verified = False  # 兜底探测没有经过第三方验证，不计入稳定性成功率
+        verified = False  # 兜底探测没有经过第三方验证，在稳定性成功率里按失败计
     if not verified:
         return False, None
     if not item.get("probe_attempted"):

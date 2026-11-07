@@ -25,7 +25,7 @@ proxyip.leilaomi.cc.cd
 
 ## 接口
 
-除 `/`、`/health`、`/robots.txt` 外都需要[认证](#认证)。
+`/`、`/health`、`/robots.txt` 公开；下表其余接口需要[认证](#认证)；未列出的路径直接返回首页。
 
 | 路径 | 内容 |
 |---|---|
@@ -42,7 +42,7 @@ proxyip.leilaomi.cc.cd
 | `/full.json` | 完整报告（来源统计、每个 IP 的质量与测速） |
 | `/state.json`、`/history.json` | failover 状态、主 IP 切换历史 |
 | `/stats` | ASN / colo / 延迟分布 |
-| `/token` | 当天的 HMAC Token（需 Cookie） |
+| `/token` | 当天的 HMAC Token（需签名 Cookie 或有效 HMAC Token） |
 
 数据新鲜度：`/health` 在数据超过 6 小时时 `stale=true`，超过 12 小时 `ok=false`（HTTP 状态码仍是 200）。
 
@@ -73,7 +73,8 @@ GitHub Actions（cron 17 */3 * * * UTC，也可手动触发）
  ├─ build_dataset.py
  │   ├─ ① 收集      文本源 + 域名源 + allowlist + 当前 DNS IP，剔除 Cloudflare 官方段和 denylist
  │   ├─ ② 预算      按优先级取前 PROXYIP_MAX_CANDIDATES（默认 1400）
- │   ├─ ③ 验证      api.090227.xyz/check：出口 IPv4、国家、ASN、colo、bot score
+ │   ├─ ③ 验证      cmliu 检测接口（CHECK_APIS 依次故障转移）：出口 IPv4、国家、ASN、colo、bot score
+ │   │              接口自身故障的 IP 退避后低并发重测一轮；无有效 IP 且接口故障 ≥90% 时直接退出、不发布
  │   ├─ ④ 测速排序  本机 TCP+TLS RTT → 7 天稳定性 → 前 30 个下载 10MB 测吞吐 → 叠加本地探测
  │   ├─ ⑤ 过滤      只留目标国家（默认 US），同一 ASN 最多 10 个（主 IP 永远保留）
  │   ├─ ⑥ 选主      主 IP 健康就保留，连续失败才 failover
@@ -118,9 +119,17 @@ Cloudflare：Worker cf-proxyip-us（只读 KV 分发，不做扫描）· KV PROX
 
 ## 验证
 
-- 每个候选调用 `https://api.090227.xyz/check?proxyip=<ip>`（并发 24，超时 35 秒），读取出口 IP 的国家、ASN、colo 和 Cloudflare bot management 字段。
+- 检测接口来自上游 [cmliu/CF-Workers-CheckProxyIP](https://github.com/cmliu/CF-Workers-CheckProxyIP)。默认 `CHECK_APIS` 依次是：
+  1. `https://check.proxyip.cmliussss.net/check`：目前唯一实测可用的主接口。
+  2. `https://api.check.proxyip.cmliussss.net/check`：上游 2026-10-21 加 `API_HOST` 后官方页面改调的 API 域名，但截至 2026-11-07 它跑在 Cloudflare Snippets 上，探测全部返回 `connect() is not available in Snippets`。保留作备用，上游修好后自动生效。
+  - `api.090227.xyz` 已于 2026-11-06 改为 Snippets，同样不可用，已移除。
+- 每个候选调用 `<CHECK_API>?proxyip=<ip>`（并发 24，单次超时 35 秒，每个接口最多试 2 次），读取 `probe_results.ipv4.exit` 里的国家、ASN、colo 和 Cloudflare bot management 字段。
+- **接口故障转移**：网络 / HTTP 错误，或返回 `connect() is not available` 这类接口自身故障时，换下一个接口；候选本身不通（如 connection refused）不换。
+- **退避重试**：第一轮仍是接口故障的 IP，等 `CHECKER_RETRY_DELAY_S`（30 秒）后用 `CHECKER_RETRY_WORKERS`（6）并发再测一轮。重试轮总时长不超过 `CHECKER_RETRY_BUDGET_S`（300 秒），且必须在脚本启动后 `CHECKER_RETRY_CUTOFF_S`（1200 秒）内结束；每次请求、响应体读取和直连探测都受这个截止时间约束，没测完的 IP 保留第一轮结果。
+- **错误样本**：接口故障按「接口: 错误」分组打印前 5 条。样本只记录每个 IP 最终停下的那个接口，前面接口的错误会被覆盖（含 HTTP 状态码和响应体前 200 字节，重试轮不读响应体），直接在 Actions 日志里定位。
+- **故障保护**：没有任何有效 IP 且 ≥90% 结果是接口故障时，脚本以 `all ProxyIP checkers look broken` 退出，不发布空列表，线上数据保持不变。
 - 只接受 `success=true` **且** `supports_ipv4=true`。出口走 IPv6 的 `ipv6_only` 代理目前会被丢弃（通常约占验证成功数的一半）。
-- 检测 API 超时或网络错误时，才会退回直连 HTTPS 探测（`direct_https`）。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，也不计入 7 天成功率。
+- 接口依次尝试，遇到第一个**不是接口故障**的结果就停；用这个最终结果判断：`success=false` 且错误文本含 `timeout` 或 `urlopen` 时，退回直连 HTTPS 探测（`direct_https`）。响应体读取阶段的连接重置等不含这两个词的错误不会回退。这类结果标记 `fallback_unverified`、加 200000 排序惩罚、不能成为健康主 IP，在 7 天成功率里按**失败**计（所以接口长时间故障会拉低历史成功率）。
 
 ## 排序与测速：四个阶段
 
@@ -253,6 +262,11 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 | `PROXYIP_RECORD_NAME` | `proxyip.leilaomi.cc.cd` | DNS-only A 记录名 |
 | `PROXYIP_MAX_WORKERS` | `24` | 候选验证并发数 |
 | `PROXYIP_CHECK_TIMEOUT` | `35` | 单个候选检测超时，单位秒 |
+| `CHECK_APIS` | `https://check.proxyip.cmliussss.net/check,https://api.check.proxyip.cmliussss.net/check` | 检测接口列表，逗号分隔，按顺序故障转移 |
+| `CHECKER_RETRY_DELAY_S` | `30` | 第一轮接口故障后，重试前的退避秒数 |
+| `CHECKER_RETRY_WORKERS` | `6` | 重试轮并发数 |
+| `CHECKER_RETRY_BUDGET_S` | `300` | 重试轮总预算，单位秒；实际取它与截止时间剩余秒数的较小值，不足 30 秒则跳过整轮重试 |
+| `CHECKER_RETRY_CUTOFF_S` | `1200` | 重试必须在脚本启动后多少秒内结束，给后续测速和部署留时间 |
 | `PROXYIP_MAX_CANDIDATES` | `1400` | 最多检测多少个候选 |
 | `PROXYIP_LIST_DOMAIN` | `https://list.leilaomi.cc.cd` | `scripts/auto_update.py` 读取线上列表的地址 |
 | `PROXYIP_SKIP_GENERATE` | `0` | 置 `1` 时跳过 `build_dataset.py`，直接同步已生成的 `docs/`（CI 用） |
@@ -315,7 +329,8 @@ python3 scripts/auto_update.py
 
 ## 已知限制
 
-- **检测单点**：所有验证都依赖 `api.090227.xyz`。它不可用时只剩未验证的直连探测，这类结果不会成为主 IP。
+- **检测单点**：虽然配置了两个接口，目前实际只有 `check.proxyip.cmliussss.net` 能用。上游正在拆分页面与 API，这个域名也可能改成 Snippets；那时需要换接口，或在自己的 Cloudflare 账号部署 CF-Workers-CheckProxyIP 当专用检测接口，再通过 `CHECK_APIS` 指过去。
+- **上游证书校验**：上游 2026-10-29 起校验 TLS 叶证书主机名，反代证书的候选会被判失败，有效数比 10 月少了一些。
 - **IPv6 出口被丢弃**：`ipv6_only` 代理通常也能当 ProxyIP 用，但目前不收。
 - **测速视角**：RTT 和吞吐是从 GitHub 美国 runner 测的；不跑阶段 4，排序就和你本地的体验无关。
 - **主 IP 不择优**：见上文 failover。
@@ -324,7 +339,8 @@ python3 scripts/auto_update.py
 - **ETag**：只有读取 `result_json` 的路径（如 `/current.json`、`/full.json`）支持 `If-None-Match` → 304；文本路径走 KV 快速通道，只带 ETag，不返回 304。
 - **`audit.py` 仍调用 `wrangler kv key get`** 读 KV，和同步走 REST API 不一致。
 - **仓库膨胀**：每轮都提交 `full.json` 和约 580KB 的 `ip_history.json`。
-- Actions 没有 pin 到 commit SHA，`wrangler@4` 也没锁小版本。
+- Actions 没有 pin 到 commit SHA，`wrangler@4` 也没锁小版本。`actions/checkout@v4`、`actions/setup-node@v4` 目前会出现 Node 20 弃用警告（被强制跑在 Node 24 上，不影响结果）。
+- **Runner 镜像**：`runs-on: ubuntu-latest` 自 2026-11 起开始迁到 Ubuntu 26.04（Python 3.14、OpenSSL 3.5），已验证可正常运行。
 
 ## 排障指南
 
@@ -373,6 +389,14 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 
 先看 `docs/state.json` 的 `status` 和 `failure_count`。`degraded` 表示主 IP 本轮验证失败，下一轮仍失败就会 failover。如果 `failure_count` 一直不涨，说明 `audit.py` 或 git push 失败了，计数没有被提交。
 
+### 6. 「Generate, validate, and test outputs」失败
+
+先在日志里搜 `checker errors` 和 `checker error sample`：
+
+- `checker errors: N/N` 加 `all ProxyIP checkers look broken`：检测接口全挂，线上数据没动。看样本里的错误：`connect() is not available in Snippets` 表示**样本里那个接口**已改成 Snippets、不会自己恢复；超时、5xx、429 一般是临时故障，下一轮多半自愈。样本只反映最终停下的接口（全故障时就是最后一个、通常是备用），改 `CHECK_APIS` 前先用下面的 curl 逐个测一遍主接口。
+- `docs/all.txt has too few valid IPs`：有效 IP 少于 5 个。若 `checker errors` 不高，说明候选本身大面积失效或上游判定变严，去看候选来源。
+- 手动验证接口：对 `CHECK_APIS` 里每个地址跑 `curl "<接口>?proxyip=<当前主 IP>:443"`。返回 JSON 且 `success=true`、`supports_ipv4=true` 说明接口正常、IP 通过了验证（是否收录还要过目标地区过滤和同 ASN 数量上限）；`success=false` 但错误里没有 `connect() is not available` 之类的接口故障特征，只说明这个 IP 没过，接口本身正常，可以换几个 IP 再试；HTTP 错误、超时或 Snippets 报错才是接口故障。
+
 ## 仓库结构
 
 | 路径 | 作用 |
@@ -384,7 +408,7 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 | `scripts/sync_kv.py` / `sync_dns.py` | Cloudflare REST API 同步 KV / DNS |
 | `scripts/validate_outputs.py` | `docs/` 一致性校验（提交前） |
 | `scripts/audit.py` | 部署后审计：文件一致性、DNS 解析、线上接口、认证 |
-| `tests/` | 排序、历史、failover、候选预算、ASN、Worker 认证的单元测试 |
+| `tests/` | 排序、历史、failover、候选预算、ASN、Worker 认证、检测接口故障转移与重试预算的单元测试 |
 | `allowlist.txt` / `denylist.txt` | 手动候选（可选） |
 | `docs/` | 每轮的数据快照，由脚本生成，**不要手改** |
 | `docs/probe_local.json` | 本机探测结果，只由本地提交，CI 不覆盖 |
