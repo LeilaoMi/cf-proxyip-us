@@ -1,0 +1,9 @@
+# gitleaks config, read automatically by the shared Security workflow
+# (LeilaoMi/security-workflows). Keep [extend] useDefault = true:
+# without it the default rules are replaced and nothing is detected.
+
+[extend]
+useDefault = true
+
+[allowlist]
+stopwords = ["20260531-abc123..."]
