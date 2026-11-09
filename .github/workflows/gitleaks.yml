@@ -30,16 +30,20 @@ name: Gitleaks
 # [extend] useDefault = true, or it REPLACES the default rules and
 # nothing is detected at all (verified locally against gitleaks
 # v8.30.1).
-# cf-proxyip-us note: one historical false positive is forgiven by
-# COMMIT only (92e864b, 2026-06-04 bot commit "Harden ProxyIP automation
-# before deployment"): README.md:39 showed a curl example with the
-# truncated placeholder token `20260531-abc123...` (18 chars, contains
-# "...", not the `YYYYMMDD-<64 hex>` HMAC format -- verified locally
-# against gitleaks v8.30.1). The example was later rewritten to
-# `<HMAC_TOKEN>` and the working tree is clean. Forgiving the commit
-# keeps this one docs example from failing the check forever, while a
-# new secret in README.md, in any other commit or in the working tree,
-# is still flagged.
+# cf-proxyip-us note: one historical false positive is forgiven by an
+# exact STOPWORD (92e864b, 2026-06-04 bot commit "Harden ProxyIP
+# automation before deployment"): README.md:39 showed a curl example
+# with the truncated placeholder token `20260531-abc123...` (18 chars,
+# contains "...", not the `YYYYMMDD-<64 hex>` HMAC format -- verified
+# locally against gitleaks v8.30.1). The example was later rewritten to
+# `<HMAC_TOKEN>` and the working tree is clean. A stopword is used
+# instead of a commit exemption on purpose (CodeRabbit review): the
+# commit touched 14 files, and a commit exemption would skip the
+# history scan's view of all of them. The stopword only matches the
+# literal placeholder string -- a real token cannot contain "...", and
+# a planted real Bearer token + AKIA secret are still flagged (tested
+# locally). Nothing else in the repo's history matches it: the
+# no-allowlist baseline scan found exactly this one finding.
 on:
   push:
     branches: [main]
@@ -58,7 +62,7 @@ env:
     useDefault = true
 
     [allowlist]
-    commits = ["92e864be61a0ae16562c5da0ce68c51de4fa37ed"]
+    stopwords = ["20260531-abc123..."]
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
