@@ -30,6 +30,16 @@ name: Gitleaks
 # [extend] useDefault = true, or it REPLACES the default rules and
 # nothing is detected at all (verified locally against gitleaks
 # v8.30.1).
+# cf-proxyip-us note: one historical false positive is forgiven by
+# COMMIT only (92e864b, 2026-06-04 bot commit "Harden ProxyIP automation
+# before deployment"): README.md:39 showed a curl example with the
+# truncated placeholder token `20260531-abc123...` (18 chars, contains
+# "...", not the `YYYYMMDD-<64 hex>` HMAC format -- verified locally
+# against gitleaks v8.30.1). The example was later rewritten to
+# `<HMAC_TOKEN>` and the working tree is clean. Forgiving the commit
+# keeps this one docs example from failing the check forever, while a
+# new secret in README.md, in any other commit or in the working tree,
+# is still flagged.
 on:
   push:
     branches: [main]
@@ -37,6 +47,18 @@ on:
 permissions:
   contents: read
   security-events: write
+env:
+  # Shared by all three scans in this file (CLI steps and the action
+  # both follow the gitleaks config precedence, which includes
+  # GITLEAKS_CONFIG_TOML). [extend] useDefault is required: a custom
+  # config without it REPLACES the default rules and nothing is
+  # detected at all (verified locally against gitleaks v8.30.1).
+  GITLEAKS_CONFIG_TOML: |
+    [extend]
+    useDefault = true
+
+    [allowlist]
+    commits = ["92e864be61a0ae16562c5da0ce68c51de4fa37ed"]
 jobs:
   gitleaks:
     runs-on: ubuntu-latest
@@ -49,9 +71,15 @@ jobs:
       pull-requests: write
       security-events: write
     steps:
-      - uses: actions/checkout@v7.0.1
+      # Pinned to the full commit SHA of the v7.0.1 tag
+      # (3d3c42e5aac5ba805825da76410c181273ba90b1, verified via the API).
+      # persist-credentials is off: this job only reads code and never
+      # pushes, so the token must not linger in .git/config (same
+      # rationale as semgrep.yml; CodeRabbit review).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       # Pinned to the full commit SHA of the v3.0.0 tag
       # (e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e, verified via the API);
       # a mutable tag could be re-pointed at malicious code.
@@ -66,9 +94,15 @@ jobs:
   gitleaks-full-history:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      # Pinned to the full commit SHA of the v7.0.1 tag
+      # (3d3c42e5aac5ba805825da76410c181273ba90b1, verified via the API).
+      # persist-credentials is off: this job only reads code and never
+      # pushes, so the token must not linger in .git/config (same
+      # rationale as semgrep.yml; CodeRabbit review).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install Gitleaks v8.30.1
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks_8.30.1_linux_x64.tar.gz
