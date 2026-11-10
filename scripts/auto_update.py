@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+
 import hashlib
 import hmac
 import json
@@ -7,9 +8,10 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 from http.cookiejar import CookieJar
+from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
+
 
 def hmac_token() -> str:
     secret = os.environ.get("PROXYIP_HMAC_SECRET", "")
