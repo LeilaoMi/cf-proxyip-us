@@ -36,7 +36,7 @@ jobs:
 
       - name: Install Wrangler (pinned in package-lock.json)
         run: |
-          npm ci --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Syntax check
