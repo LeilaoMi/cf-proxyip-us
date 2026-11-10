@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import concurrent.futures
+import hashlib
 import ipaddress
 import json
 import os
@@ -12,7 +12,7 @@ import socket
 import ssl
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -139,7 +139,7 @@ LOCAL_THROUGHPUT_WEIGHT = float(os.environ.get("PROXYIP_LOCAL_THROUGHPUT_WEIGHT"
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def fetch_text(url: str, retries: int = 3) -> str:
@@ -330,7 +330,7 @@ def candidate_priority_key(ip_history: dict, day: str | None = None):
 
     以前按 IP 字符串排序截断，会每轮系统性丢掉 2xx 之后的地址段。
     """
-    day = day or datetime.now(timezone.utc).strftime("%Y%m%d")
+    day = day or datetime.now(UTC).strftime("%Y%m%d")
     records = ip_history if isinstance(ip_history, dict) else {}
 
     def recent_ok(ip: str) -> bool:
@@ -417,7 +417,7 @@ def check_cmliu(ip: str, retries: int = 2, api: str | None = None, deadline: flo
             last_err = detail
             if attempt < retries - 1:
                 if _remaining(deadline) <= 1 + attempt:
-                    raise DeadlineExceeded(ip)
+                    raise DeadlineExceeded(ip)  # noqa: B904
                 time.sleep(1 + attempt)
     return {"ip": ip, "success": False, "error": str(last_err), "latency_ms": TIMEOUT * 1000, "checker": api, "checker_error": True}
 
@@ -640,7 +640,7 @@ def probe_throughput(ip: str, byte_budget: int = THROUGHPUT_BYTES, timeout: int 
                 break
             try:
                 chunk = ssock.recv(65536)
-            except (socket.timeout, TimeoutError, ssl.SSLError):
+            except (TimeoutError, ssl.SSLError):
                 break
             if not chunk:
                 break
@@ -899,7 +899,7 @@ def load_local_probe(now_ts: datetime | None = None) -> dict | None:
     probed_at = parse_timestamp(data.get("probed_at"))
     if probed_at is None:
         return None
-    age_hours = ((now_ts or datetime.now(timezone.utc)) - probed_at).total_seconds() / 3600
+    age_hours = ((now_ts or datetime.now(UTC)) - probed_at).total_seconds() / 3600
     if age_hours > LOCAL_PROBE_MAX_AGE_HOURS:
         return None
     data["_age_hours"] = round(age_hours, 2)
@@ -962,7 +962,7 @@ def refresh_throughput(item: dict, history: dict, local: dict | None) -> None:
     history_mbps = record.get("mbps")
     history_at = parse_timestamp(record.get("mbps_at"))
     if history_at is not None:
-        age_hours = (datetime.now(timezone.utc) - history_at).total_seconds() / 3600
+        age_hours = (datetime.now(UTC) - history_at).total_seconds() / 3600
         if age_hours > THROUGHPUT_MAX_AGE_HOURS:
             history_mbps = None
     local_mbps = item.get("local_throughput_mbps")
@@ -1099,7 +1099,7 @@ def select_current(valid: list[dict], all_results: list[dict]) -> tuple[dict, di
     checked_by_ip = {x.get("ip"): x for x in all_results}
     best = sorted(valid, key=rank_key)
     best_item = best[0] if best else None
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     now = now_dt.isoformat()
 
     if previous_ip and previous_ip in valid_by_ip:
@@ -1246,7 +1246,7 @@ def parse_timestamp(value) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -1391,7 +1391,7 @@ def _fresh_throughput(record: dict, checked_at: str, measured):
     parsed = parse_timestamp(at)
     if stale is None or parsed is None:
         return None, None
-    if (datetime.now(timezone.utc) - parsed).total_seconds() > THROUGHPUT_MAX_AGE_HOURS * 3600:
+    if (datetime.now(UTC) - parsed).total_seconds() > THROUGHPUT_MAX_AGE_HOURS * 3600:
         return None, None
     return stale, at
 

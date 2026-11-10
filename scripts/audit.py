@@ -9,8 +9,8 @@ import socket
 import subprocess
 import sys
 import time
-from pathlib import Path
 from http.cookiejar import CookieJar
+from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 LIST_DOMAIN = os.environ.get("PROXYIP_LIST_DOMAIN", "https://list.leilaomi.cc.cd").rstrip("/")

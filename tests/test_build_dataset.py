@@ -4,7 +4,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -292,7 +292,7 @@ class ThroughputTest(unittest.TestCase):
     def test_refresh_throughput_uses_fresh_history_and_expires_stale(self) -> None:
         fresh = make_item("10.0.0.1", latency=100)
         build_dataset.refresh_throughput(
-            fresh, {"10.0.0.1": {"mbps": 9.5, "mbps_at": datetime.now(timezone.utc).isoformat()}}, None
+            fresh, {"10.0.0.1": {"mbps": 9.5, "mbps_at": datetime.now(UTC).isoformat()}}, None
         )
         self.assertEqual(fresh["eff_throughput_mbps"], 9.5)
         self.assertEqual(fresh["throughput_source"], "history")
@@ -344,7 +344,7 @@ class LocalProbeTest(unittest.TestCase):
         build_dataset.LOCAL_PROBE_PATH.write_text(json.dumps(payload), encoding="utf-8")
 
     def test_fresh_file_is_loaded_with_age(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self._write({"probed_at": now.isoformat(), "rtt": {"10.0.0.1": {"rtt_ok": True}}, "throughput": {}})
 
         loaded = build_dataset.load_local_probe(now)
@@ -353,10 +353,10 @@ class LocalProbeTest(unittest.TestCase):
         self.assertEqual(loaded["_age_hours"], 0)
 
     def test_stale_file_is_ignored(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale = now.timestamp() - (build_dataset.LOCAL_PROBE_MAX_AGE_HOURS + 1) * 3600
         self._write({
-            "probed_at": datetime.fromtimestamp(stale, timezone.utc).isoformat(),
+            "probed_at": datetime.fromtimestamp(stale, UTC).isoformat(),
             "rtt": {"10.0.0.1": {"rtt_ok": True}},
             "throughput": {},
         })
@@ -428,7 +428,7 @@ class IpHistoryStorageTest(unittest.TestCase):
         self.assertEqual(history["1.1.1.1"]["last_checked_at"], "2026-10-03T00:00:00+00:00")
 
     def test_window_is_bounded(self) -> None:
-        checked_at = datetime.now(timezone.utc).isoformat()
+        checked_at = datetime.now(UTC).isoformat()
         results = [{"ip": "1.1.1.1", "success": True, "supports_ipv4": True, "probe_attempted": True, "rtt_ok": True, "rtt_p50_ms": 100}]
         history: dict = {}
         for _ in range(build_dataset.HISTORY_WINDOW + 10):
@@ -441,7 +441,7 @@ class IpHistoryStorageTest(unittest.TestCase):
     def test_stale_records_are_pruned_on_load(self) -> None:
         self._write({
             "1.1.1.1": {"recent": "1", "lats": "100", "last_checked_at": "2026-01-01T00:00:00+00:00"},
-            "2.2.2.2": {"recent": "1", "lats": "100", "last_checked_at": datetime.now(timezone.utc).isoformat()},
+            "2.2.2.2": {"recent": "1", "lats": "100", "last_checked_at": datetime.now(UTC).isoformat()},
             "3.3.3.3": {"checks": [{"checked_at": "2026-01-01T00:00:00+00:00", "success": True, "latency_ms": 50}]},
         })
 
@@ -452,7 +452,7 @@ class IpHistoryStorageTest(unittest.TestCase):
         self.assertNotIn("3.3.3.3", loaded)
 
     def test_legacy_checks_record_is_migrated(self) -> None:
-        checked_at = datetime.now(timezone.utc).isoformat()
+        checked_at = datetime.now(UTC).isoformat()
         self._write({
             "5.5.5.5": {
                 "checks": [
@@ -473,7 +473,7 @@ class IpHistoryStorageTest(unittest.TestCase):
         self.assertEqual(record["avg_latency_ms_recent"], 80.0)
 
     def test_throughput_is_recorded_carried_forward_and_expired(self) -> None:
-        checked_at = datetime.now(timezone.utc).isoformat()
+        checked_at = datetime.now(UTC).isoformat()
         results = [
             {"ip": "1.1.1.1", "success": True, "supports_ipv4": True, "probe_attempted": True, "rtt_ok": True, "rtt_p50_ms": 100}
         ]
