@@ -1,0 +1,8 @@
+{
+  "name": "cf-proxyip-us",
+  "private": true,
+  "description": "Pins wrangler for CI deploys (npm ci); Dependabot keeps it current.",
+  "devDependencies": {
+    "wrangler": "4.159.0"
+  }
+}

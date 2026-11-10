@@ -34,8 +34,10 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install Wrangler
-        run: npm install -g wrangler@4
+      - name: Install Wrangler (pinned in package-lock.json)
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Syntax check
         run: |
