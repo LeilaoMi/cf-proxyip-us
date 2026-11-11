@@ -15,6 +15,10 @@ from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 
+HEALTH_RETRY_ATTEMPTS = 10
+HEALTH_RETRY_DELAY_S = 10
+
+
 def wrangler_cmd() -> str:
     """优先用仓库 node_modules/.bin 里按 package-lock 锁定的 wrangler。
     shutil.which 在 Windows 上会按 PATHEXT 解析出 wrangler.cmd，subprocess 直接传 "wrangler" 解析不到。"""
@@ -112,10 +116,21 @@ def main() -> None:
     status, body = fetch(f"{LIST_DOMAIN}/current.txt?r={int(time.time())}", token)
     assert_true(status == 200 and body.strip() == current, f"live current.txt mismatch: {status} {body[:120]}")
 
-    status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token)
+    # Worker isolate 会把 result_json 缓存 60 秒（RESULT_CACHE_TTL_MS），刚同步完 KV 时可能读到旧值；
+    # 最多重试约 90 秒，仍不一致才判失败。
+    health: dict = {}
+    status, body = 0, ""
+    for attempt in range(1, HEALTH_RETRY_ATTEMPTS + 1):
+        status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token)
+        if status == 200:
+            health = json.loads(body)
+            if health.get("current") == current:
+                break
+        if attempt < HEALTH_RETRY_ATTEMPTS:
+            print(f"  health/full attempt {attempt}/{HEALTH_RETRY_ATTEMPTS}: status={status} current={health.get('current')}, want {current}", flush=True)
+            time.sleep(HEALTH_RETRY_DELAY_S)
     assert_true(status == 200, f"live health failed: {status} {body[:120]}")
-    health = json.loads(body)
-    assert_true(health.get("current") == current, "live health current mismatch")
+    assert_true(health.get("current") == current, f"live health current mismatch: {health.get('current')} != {current}")
 
     # Token rejection check: old YYYYMMDD token should now be rejected
     old_token = time.strftime("%Y%m%d", time.gmtime())
