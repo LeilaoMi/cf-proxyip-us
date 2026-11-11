@@ -18,20 +18,20 @@ GitHub Actions workflow：
 主要步骤：
 
 1. Checkout 仓库完整历史。
-2. 安装 Node 20。
-3. 安装 `wrangler@4`。
+2. 安装 Node 24、Python 3.12。
+3. `npm ci` 按 `package-lock.json` 安装 wrangler（要求 Node ≥ 22.12）。
 4. Python / Worker 语法检查。
 5. `build_dataset.py` 生成 ProxyIP 数据（四阶段探测排序，见 README「排序与测速：四个阶段」）。
 6. 校验 `docs/` 输出。
 7. 运行单元测试。
 8. 执行 `scripts/auto_update.py`（job env 带 `PROXYIP_SKIP_GENERATE=1`，跳过第 5 步已做过的生成）。
-9. 同步 KV。
-10. 同步 DNS-only A 记录。
-11. 部署 Worker。
+9. 部署 Worker（放在写线上数据之前，失败时 KV / DNS 不动）。
+10. 同步 KV。
+11. 同步 DNS-only A 记录。
 12. 线上验证。
 13. 如数据变化，按白名单提交 `docs/` 快照。
 
-job 超时 45 分钟。workflow 写 `node-version: "20"`，GitHub 托管 runner 已弃用 Node 20，可能被强制升级，只要 `wrangler@4` 装得上即可。
+job 超时 45 分钟。Node 版本必须满足 `package.json` 的 `engines`；`ci.yml` 用 `engines` 下限 Node 22.12.0 和生产用的 Node 24 各跑一遍 `wrangler deploy --dry-run`，Dependabot 升级 wrangler 后引擎要求提高会在 PR 上暴露（同时要改 `engines` 和矩阵）。
 
 手动触发与跟踪：
 
@@ -136,7 +136,7 @@ Cloudflare API Token 至少需要：
 
 - Token 是否具备 Workers Scripts 编辑权限。
 - `wrangler.toml` 中 Worker name、KV binding、route 是否正确。
-- `wrangler@4` 是否安装成功。
+- `npm ci` 是否成功，日志里是否有 `Wrangler requires at least Node.js`（Node 版本低于 `engines`）。
 
 ### 线上 Token 认证失败
 

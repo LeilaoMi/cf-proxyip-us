@@ -4,5 +4,8 @@
   "description": "Pins wrangler for CI deploys (npm ci); Dependabot keeps it current.",
   "devDependencies": {
     "wrangler": "4.159.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

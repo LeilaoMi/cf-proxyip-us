@@ -1,0 +1,47 @@
+name: CI
+# PR 与 main 上验证主流程用到的环境：Python 测试 + 按 package-lock 安装 wrangler 并 dry-run 打包 Worker。
+# 不需要任何 secret，不碰线上。Dependabot 的 npm / actions 升级 PR 也会经过这里。
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.12.0 = package.json engines 下限；24 = 生产 workflow 实际使用的版本
+        node: ["22.12.0", "24"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Syntax check
+        run: |
+          python3 -m py_compile build_dataset.py scripts/*.py
+          node --check worker.js
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Install Wrangler (pinned in package-lock.json)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Wrangler dry-run build
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-dry-run"
