@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -12,6 +13,13 @@ import time
 from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
+
+
+def wrangler_cmd() -> str:
+    """优先用仓库 node_modules/.bin 里按 package-lock 锁定的 wrangler。
+    shutil.which 在 Windows 上会按 PATHEXT 解析出 wrangler.cmd，subprocess 直接传 "wrangler" 解析不到。"""
+    local_bin = Path(__file__).resolve().parent.parent / "node_modules" / ".bin"
+    return shutil.which("wrangler", path=str(local_bin)) or shutil.which("wrangler") or "wrangler"
 
 LIST_DOMAIN = os.environ.get("PROXYIP_LIST_DOMAIN", "https://list.leilaomi.cc.cd").rstrip("/")
 PROXY_DOMAIN = os.environ.get("PROXYIP_RECORD_NAME", "proxyip.leilaomi.cc.cd")
@@ -63,7 +71,7 @@ def dns_ips() -> list[str]:
 
 def kv_get(key: str) -> str:
     return subprocess.check_output([
-        "wrangler", "kv", "key", "get", key,
+        wrangler_cmd(), "kv", "key", "get", key,
         "--namespace-id", KV_NAMESPACE_ID,
         "--remote",
     ], text=True).strip()

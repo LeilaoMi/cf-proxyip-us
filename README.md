@@ -325,9 +325,8 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 export CLOUDFLARE_ACCOUNT_ID="<Cloudflare Account ID>"
 export CLOUDFLARE_API_TOKEN="<Cloudflare API Token>"
 export PROXYIP_HMAC_SECRET="<HMAC Secret>"
-npm ci --ignore-scripts
-export PATH="$PWD/node_modules/.bin:$PATH"   # 用锁定版本的 wrangler；PowerShell: $env:Path = "$PWD\node_modules\.bin;$env:Path"
-python3 scripts/auto_update.py
+# 脚本优先调用 node_modules/.bin 里锁定版本的 wrangler（Windows 下解析 wrangler.cmd）；npm ci 失败就不往下跑
+npm ci --ignore-scripts && python3 scripts/auto_update.py
 ```
 
 `docs/probe_local.json` 超过 168 小时就不会再被采用，这时排序只反映 GitHub 美国 runner 的网络。要让阶段 4 生效，需要至少每周在自己的网络上跑一次。

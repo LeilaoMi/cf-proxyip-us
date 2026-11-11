@@ -5,12 +5,20 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
+
+
+def wrangler_cmd() -> str:
+    """优先用仓库 node_modules/.bin 里按 package-lock 锁定的 wrangler。
+    shutil.which 在 Windows 上会按 PATHEXT 解析出 wrangler.cmd，subprocess 直接传 "wrangler" 解析不到。"""
+    local_bin = Path(__file__).resolve().parent.parent / "node_modules" / ".bin"
+    return shutil.which("wrangler", path=str(local_bin)) or shutil.which("wrangler") or "wrangler"
 
 
 def hmac_token() -> str:
@@ -115,7 +123,7 @@ def main() -> None:
 
     # Step 2: Deploy Worker first, then sync KV + DNS.
     # 先部署：wrangler/Node 等环境问题在写线上数据之前就暴露，避免线上已更新但 state 未提交。
-    run(["wrangler", "deploy"])
+    run([wrangler_cmd(), "deploy"])
     run([sys.executable, "scripts/sync_kv.py"])
     run([sys.executable, "scripts/sync_dns.py"])
 
