@@ -14,7 +14,6 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
-
 HEALTH_RETRY_ATTEMPTS = 10
 HEALTH_RETRY_DELAY_S = 10
 
