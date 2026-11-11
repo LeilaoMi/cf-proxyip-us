@@ -31,7 +31,7 @@ GitHub Actions workflow：
 12. 线上验证。
 13. 如数据变化，按白名单提交 `docs/` 快照。
 
-job 超时 45 分钟。Node 版本必须满足 `package.json` 的 `engines`；Dependabot 升级 wrangler 的 PR 会经过 `ci.yml` 的 `wrangler deploy --dry-run`，引擎要求变化会在 PR 上暴露。
+job 超时 45 分钟。Node 版本必须满足 `package.json` 的 `engines`；`ci.yml` 用 `engines` 下限 Node 22.12.0 和生产用的 Node 24 各跑一遍 `wrangler deploy --dry-run`，Dependabot 升级 wrangler 后引擎要求提高会在 PR 上暴露（同时要改 `engines` 和矩阵）。
 
 手动触发与跟踪：
 

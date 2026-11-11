@@ -325,6 +325,8 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 export CLOUDFLARE_ACCOUNT_ID="<Cloudflare Account ID>"
 export CLOUDFLARE_API_TOKEN="<Cloudflare API Token>"
 export PROXYIP_HMAC_SECRET="<HMAC Secret>"
+npm ci --ignore-scripts
+export PATH="$PWD/node_modules/.bin:$PATH"   # 用锁定版本的 wrangler；PowerShell: $env:Path = "$PWD\node_modules\.bin;$env:Path"
 python3 scripts/auto_update.py
 ```
 
