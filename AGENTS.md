@@ -78,7 +78,10 @@ python3 -m py_compile build_dataset.py scripts/*.py
 node --check worker.js
 python3 scripts/validate_outputs.py
 python3 -m unittest discover -s tests
+npm ci --ignore-scripts && npx --no-install wrangler deploy --dry-run
 ```
+
+改 workflow、`package.json` / `package-lock.json` 或 `scripts/auto_update.py` 后，合并后要手动跑一次 `ProxyIP Auto Update` 确认端到端可用；PR 上的 `ci.yml` 只覆盖到 dry-run，不覆盖线上同步、审计和推送。
 
 PowerShell 不会展开 `scripts/*.py`，需要手动展开：
 

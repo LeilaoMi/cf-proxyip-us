@@ -113,10 +113,11 @@ def main() -> None:
 
     after = current_primary()
 
-    # Step 2: Sync to KV + DNS + Deploy Worker
+    # Step 2: Deploy Worker first, then sync KV + DNS.
+    # 先部署：wrangler/Node 等环境问题在写线上数据之前就暴露，避免线上已更新但 state 未提交。
+    run(["wrangler", "deploy"])
     run([sys.executable, "scripts/sync_kv.py"])
     run([sys.executable, "scripts/sync_dns.py"])
-    run(["wrangler", "deploy"])
 
     # Step 3: Verify
     verify_live()

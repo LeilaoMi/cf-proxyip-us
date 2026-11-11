@@ -81,9 +81,9 @@ GitHub Actions（cron 17 */3 * * * UTC，也可手动触发）
  │   └─ ⑦ 输出      docs/*.txt / *.json、ip_history.json
  ├─ validate_outputs.py + unittest
  └─ scripts/auto_update.py
+     ├─ wrangler deploy   每次运行都会部署（不管 worker.js 有没有改动）；放在最前，失败时线上数据不动
      ├─ sync_kv.py        Cloudflare REST API 写 13 个 KV key
      ├─ sync_dns.py       Cloudflare REST API 把 A 记录改成主 IP
-     ├─ wrangler deploy   每次运行都会部署（不管 worker.js 有没有改动）
      ├─ 线上验证 + audit.py
      └─ git commit/push docs/ 数据快照
 
@@ -221,8 +221,10 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 - **设计**：每 3 小时一次（`17 */3 * * *` UTC）。
 - **实际**：GitHub 的定时任务经常延迟或被跳过，实测平均约 6–7 小时一轮，最长超过 10 小时。急用时去 Actions 页面手动 *Run workflow*。
 - 合并到 `main` **不会**触发运行（没有 push 触发器），新代码在下一次运行时生效。
-- 每次运行顺序：语法检查 → `build_dataset.py` → 校验 + 单元测试 → `auto_update.py`（同步 KV → 同步 DNS → `wrangler deploy` → 线上验证 → `audit.py` → 按白名单提交 `docs/`）。
-- 线上写入发生在审计和 git push **之前**：如果审计或推送失败，线上已经更新，但仓库里的 `state.json` 是旧的。
+- 每次运行顺序：语法检查 → `build_dataset.py` → 校验 + 单元测试 → `auto_update.py`（`wrangler deploy` → 同步 KV → 同步 DNS → 线上验证 → `audit.py` → 按白名单提交 `docs/`）。
+- 环境：Node 24、Python 3.12（workflow 里用 setup-node / setup-python 固定）；wrangler 按 `package-lock.json` 用 `npm ci` 安装，要求 Node ≥ 22.12（`package.json` 的 `engines`）。
+- `wrangler deploy` 在写 KV / DNS 之前，Node 或 wrangler 出问题时线上数据保持不变。但 KV / DNS 写入仍在审计和 git push **之前**：审计或推送失败时，线上已经更新，仓库里的 `state.json` 是旧的。
+- **PR 检查**（`.github/workflows/ci.yml`，PR 和 main）：语法检查、单元测试、`npm ci`、`wrangler deploy --dry-run`，不需要 secret。Dependabot 升级 wrangler 或 Actions 的 PR 也会经过它；`security.yml` 另跑 gitleaks、semgrep、zizmor、dependency-review、ruff、basedpyright。
 - 一轮通常 3–5 分钟，测速约经第三方代理下载 300MB。
 
 ## 配置
@@ -305,7 +307,7 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 
 ## 本地运行
 
-Windows 上把 `python3` 换成 `python`，`scripts/*.py` 需要手动展开。
+需要 Python ≥ 3.12、Node ≥ 22.12。Windows 上把 `python3` 换成 `python`，`scripts/*.py` 需要手动展开。
 
 ```bash
 # 只生成数据并校验，不碰线上
@@ -313,6 +315,7 @@ python3 build_dataset.py
 python3 scripts/validate_outputs.py
 python3 -m unittest discover -s tests
 node --check worker.js
+npm ci --ignore-scripts && npx --no-install wrangler deploy --dry-run   # 按锁定版本打包 Worker，不上传
 
 # 阶段 4：本机探测（约 6 分钟），只写 docs/probe_local.json
 PROXYIP_PROBE_ONLY=1 python3 build_dataset.py
@@ -339,7 +342,7 @@ python3 scripts/auto_update.py
 - **ETag**：只有读取 `result_json` 的路径（如 `/current.json`、`/full.json`）支持 `If-None-Match` → 304；文本路径走 KV 快速通道，只带 ETag，不返回 304。
 - **`audit.py` 仍调用 `wrangler kv key get`** 读 KV，和同步走 REST API 不一致。
 - **仓库膨胀**：每轮都提交 `full.json` 和约 580KB 的 `ip_history.json`。
-- Actions 没有 pin 到 commit SHA，`wrangler@4` 也没锁小版本。`actions/checkout@v4`、`actions/setup-node@v4` 目前会出现 Node 20 弃用警告（被强制跑在 Node 24 上，不影响结果）。
+- Actions 已 pin 到 commit SHA，wrangler 锁在 `package-lock.json`，都由 Dependabot 每月升级（冷却 7 天）。`actions/checkout@v4`、`actions/setup-node@v4` 自身仍会出现 Node 20 运行时弃用警告，不影响结果。
 - **Runner 镜像**：`runs-on: ubuntu-latest` 自 2026-11 起开始迁到 Ubuntu 26.04（Python 3.14、OpenSSL 3.5），已验证可正常运行。
 
 ## 排障指南
@@ -373,7 +376,8 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 
 - API Token 是否有 Workers Scripts 编辑权限。
 - `wrangler.toml` 的 Worker 名称、KV binding、route/custom domain 是否正确。
-- GitHub Actions 中 `wrangler@4` 是否安装成功。
+- 日志里有没有 `Wrangler requires at least Node.js`：说明 workflow 的 `node-version` 低于 `package.json` 的 `engines`（2026-11-10 PR #20 后曾因 Node 20 连续失败）。
+- `npm ci` 是否成功（`package.json` 与 `package-lock.json` 是否一致）。
 
 ### 4. Token 认证失败
 
