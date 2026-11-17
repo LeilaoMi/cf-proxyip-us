@@ -3,20 +3,15 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-WRANGLER_TOML = Path("wrangler.toml")
+from _common import kv_namespace_id
 
 
 def get_kv_namespace_id() -> str:
-    text = WRANGLER_TOML.read_text(encoding="utf-8")
-    m = re.search(r'id\s*=\s*"([^"]+)"', text)
-    if not m:
-        raise RuntimeError("Cannot find KV namespace id in wrangler.toml")
-    return m.group(1)
+    return kv_namespace_id()
 
 
 def get_account_id() -> str:
@@ -31,11 +26,6 @@ def get_api_token() -> str:
     if not token:
         raise RuntimeError("Missing CLOUDFLARE_API_TOKEN environment variable")
     return token
-
-
-def slim_full(data: dict) -> dict:
-    """Strip all_results from full.json before uploading to KV to save bandwidth."""
-    return {k: v for k, v in data.items() if k != "all_results"}
 
 
 def put_kv_value(account_id: str, namespace_id: str, token: str, key: str, path: Path) -> None:
@@ -79,17 +69,8 @@ def main() -> None:
         path = Path(source)
         if not path.exists():
             raise RuntimeError(f"Missing KV source file: {path}")
-        upload_path = path
-        if key == "result_json":
-            data = json.loads(path.read_text(encoding="utf-8"))
-            slim_path = Path("docs/full.slim.json")
-            slim_path.write_text(json.dumps(slim_full(data), ensure_ascii=False, indent=2), encoding="utf-8")
-            upload_path = slim_path
-        try:
-            put_kv_value(account_id, namespace_id, token, key, upload_path)
-        finally:
-            if key == "result_json" and upload_path.exists():
-                upload_path.unlink()
+        # docs/full.json 生成时已剔除 all_results / throughput_by_ip，直接上传即可
+        put_kv_value(account_id, namespace_id, token, key, path)
 
     print(json.dumps({"synced_keys": sorted(manifest), "namespace_id": namespace_id, "account_id": account_id}, ensure_ascii=False))
 

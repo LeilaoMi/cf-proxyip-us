@@ -27,7 +27,7 @@
 - README 示例中只能使用 `<Cloudflare API Token>`、`<HMAC Secret>` 等占位符。
 - `docs/full.json`、`docs/ip_history.json`、`docs/state.json` 是数据产物，由脚本生成；改动只应来自脚本，不要手改。
 - `docs/probe_local.json` 由本机 `PROXYIP_PROBE_ONLY=1` 运行负责提交，CI 的 `git add` 白名单里没有它，不要把它加进白名单覆盖。
-- `docs/full.slim.json` 和根目录 `result.json` 是中间产物，已 gitignore，不要提交。
+- 根目录 `result.json` 是中间产物，已 gitignore，不要提交。
 
 ## 排序管线（四阶段）
 
@@ -58,6 +58,7 @@ KV 同步不再使用 `wrangler kv key put`，避免 CI 中 Wrangler 额外请�
 | `scripts/auto_update.py` | CI 端到端自动流程：同步、部署、线上验证、审计、提交 |
 | `scripts/sync_kv.py` | 使用 Cloudflare REST API 同步 KV |
 | `scripts/sync_dns.py` | 使用 Cloudflare REST API 同步 DNS-only A 记录 |
+| `scripts/_common.py` | auto_update / audit / sync_kv 共用：HMAC token、fetch、wrangler 路径、按 TOML 读 KV namespace id |
 | `scripts/validate_outputs.py` | 本地输出一致性校验 |
 | `scripts/audit.py` | 部署后审计 |
 | `tests/test_build_dataset.py` | 单元测试：探测、门槛、稳定性历史、吞吐、本地探测、输出形状 |

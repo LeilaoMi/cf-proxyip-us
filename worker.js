@@ -162,10 +162,16 @@ export default {
       if (authErr) return reply(deny(authErr));
     }
 
-    const lightweightText = await loadTextKey(env, url.pathname);
+    // /best.txt?n= 需要按 n 截取，KV 里的 best_txt 是固定前 20 条，带 n 时跳过它
+    const wantsCustomN = url.pathname === "/best.txt" && url.searchParams.has("n");
+    const lightweightText = wantsCustomN ? null : await loadTextKey(env, url.pathname);
     if (lightweightText !== null) {
+      const textEtag = etagForText(url.pathname, lightweightText);
+      if (request.headers.get("if-none-match") === textEtag) {
+        return reply(withHeaders(new Response(null, { status: 304, headers: { etag: textEtag } }), true));
+      }
       const cacheSeconds = url.pathname === "/current.txt" ? 60 : 300;
-      return reply(withEtag(text(lightweightText, true, false, cacheSeconds), etagForText(url.pathname, lightweightText)));
+      return reply(withEtag(text(lightweightText, true, false, cacheSeconds), textEtag));
     }
 
     const result = await loadResult(env);
@@ -298,11 +304,18 @@ function bearerToken(request) {
 const hmacKeyCache = new Map();  // secret -> CryptoKey (per-isolate, no expiry needed since secret is stable)
 const hmacResultCache = new Map();  // "secret|message" -> { hex, expiresAt }
 const HMAC_CACHE_TTL_MS = 60_000;  // 60s cache for same day's HMAC
+const HMAC_CACHE_MAX = 512;
 
 async function hmacHex(secret, message) {
   const cacheKey = `${secret}|${message}`;
+  const now = Date.now();
   const cached = hmacResultCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.hex;
+  if (cached && cached.expiresAt > now) return cached.hex;
+  // cookie 消息按秒变化，键会一直新增；超过上限就清掉过期项，再不够就整体清空
+  if (hmacResultCache.size >= HMAC_CACHE_MAX) {
+    for (const [k, v] of hmacResultCache) if (v.expiresAt <= now) hmacResultCache.delete(k);
+    if (hmacResultCache.size >= HMAC_CACHE_MAX) hmacResultCache.clear();
+  }
 
   let key = hmacKeyCache.get(secret);
   if (!key) {
@@ -369,7 +382,10 @@ function noStoreJson(data) {
 function html(body, cookie = null) {
   const headers = { "content-type": "text/html; charset=utf-8" };
   if (cookie) headers["set-cookie"] = cookie;
-  return withHeaders(new Response(body, { headers }), false);
+  const response = withHeaders(new Response(body, { headers }), Boolean(cookie));
+  // 带 Set-Cookie 的页面不能进共享缓存，否则别人会拿到同一个签名 cookie
+  if (cookie) response.headers.set("cache-control", "private, no-store");
+  return response;
 }
 function withHeaders(response, privateCache = false, allowCors = false, maxAge = 300) {
   const headers = new Headers(response.headers);
