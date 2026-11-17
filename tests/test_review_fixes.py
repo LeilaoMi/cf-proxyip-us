@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import _common  # noqa: E402
+import auto_update  # noqa: E402
 
 import build_dataset as bd  # noqa: E402
 
@@ -140,6 +142,19 @@ class WorkerFixesTest(unittest.TestCase):
 
     def test_cookie_page_is_not_publicly_cached(self) -> None:
         self.assertIn('if (cookie) response.headers.set("cache-control", "private, no-store")', WORKER)
+
+
+class UnpushedCommitsTest(unittest.TestCase):
+    def test_rev_list_failure_raises_instead_of_reporting_zero(self) -> None:
+        failed = subprocess.CompletedProcess(["git"], 128, stdout="", stderr="bad revision")
+        with mock.patch.object(auto_update, "run"), mock.patch.object(auto_update.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "bad revision"):
+                auto_update.unpushed_commits()
+
+    def test_counts_commits_ahead(self) -> None:
+        ok = subprocess.CompletedProcess(["git"], 0, stdout="2\n", stderr="")
+        with mock.patch.object(auto_update, "run"), mock.patch.object(auto_update.subprocess, "run", return_value=ok):
+            self.assertEqual(auto_update.unpushed_commits(), 2)
 
 
 if __name__ == "__main__":

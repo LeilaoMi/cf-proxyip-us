@@ -78,7 +78,10 @@ def unpushed_commits() -> int:
     """本地领先 origin/main 的提交数；上一轮推送失败留下的提交也要在这一轮推上去。"""
     run(["git", "fetch", "origin", "main"], check=False)
     out = subprocess.run(["git", "rev-list", "--count", "origin/main..HEAD"], text=True, capture_output=True)
-    return int(out.stdout.strip() or 0) if out.returncode == 0 else 0
+    if out.returncode != 0:
+        # 比较失败时不能当作“没有要推送的提交”，否则遗留提交会被静默丢下
+        raise RuntimeError(f"git rev-list origin/main..HEAD failed: {out.stderr.strip()}")
+    return int(out.stdout.strip() or 0)
 
 
 def commit_and_push(after: str | None) -> None:
