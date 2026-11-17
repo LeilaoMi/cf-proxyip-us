@@ -49,6 +49,8 @@ PROXYIP_DOMAIN_SOURCES = [
 ]
 
 CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4"
+# 拉取失败时的兜底快照，避免过滤静默失效、官方 IP 混进候选。内容与 CLOUDFLARE_IPS_V4_URL 一致，更新时整份替换。
+CLOUDFLARE_IPS_V4_FALLBACK_PATH = Path(__file__).resolve().parent / "data" / "cloudflare-ips-v4.txt"
 # 第三方 ProxyIP 检测接口（cmliu/CF-Workers-CheckProxyIP），按顺序尝试；前一个出错或自身故障时换下一个。
 # 2026-10-21 上游加入 API_HOST，官方页面改为调用 api.check.proxyip.cmliussss.net，
 # 但截至 2026-11-07 该域名与 api.090227.xyz 一样跑在 Cloudflare Snippets 上（connect() 不可用），
@@ -167,10 +169,14 @@ def valid_ipv4(ip: str) -> bool:
 def load_cloudflare_ipv4_networks() -> list[ipaddress.IPv4Network]:
     try:
         text = fetch_text(CLOUDFLARE_IPS_V4_URL, retries=2)
-        return [ipaddress.IPv4Network(line.strip()) for line in text.splitlines() if line.strip()]
+        networks = [ipaddress.IPv4Network(line.strip()) for line in text.splitlines() if line.strip()]
+        if networks:
+            return networks
+        raise ValueError("empty Cloudflare IPv4 range list")
     except Exception as exc:
-        print(f"warning: failed to load Cloudflare IPv4 ranges: {exc}")
-        return []
+        print(f"warning: failed to load Cloudflare IPv4 ranges ({exc}); using bundled snapshot", flush=True)
+        text = CLOUDFLARE_IPS_V4_FALLBACK_PATH.read_text(encoding="utf-8")
+        return [ipaddress.IPv4Network(line.strip()) for line in text.splitlines() if line.strip() and not line.startswith("#")]
 
 
 def is_cloudflare_official_ip(ip: str, networks: list[ipaddress.IPv4Network]) -> bool:
@@ -231,6 +237,9 @@ def add_candidate(by_ip: dict[str, dict], row: dict, cf_networks: list[ipaddress
         "source_domains": [],
     })
     item["sources"] = sorted(set(item["sources"]) | set(row.get("sources") or []))
+    # 先到的来源没有地区提示时，用后到来源的补上，避免排序时丢掉目标地区信号
+    if not item.get("country_hint") and row.get("country_hint"):
+        item["country_hint"] = row["country_hint"]
     if row.get("source_domain"):
         item["source_domains"] = sorted(set(item.get("source_domains") or []) | {row["source_domain"]})
     if row.get("source_type"):
@@ -441,8 +450,12 @@ def check_https_direct(ip: str, timeout: int = 8, deadline: float | None = None)
         ctx.verify_mode = ssl.CERT_NONE
 
         sock = socket.create_connection((ip, 443), timeout=_left())
-        sock.settimeout(_left())
-        ssock = ctx.wrap_socket(sock, server_hostname="speed.cloudflare.com")
+        try:
+            sock.settimeout(_left())
+            ssock = ctx.wrap_socket(sock, server_hostname="speed.cloudflare.com")
+        except BaseException:
+            sock.close()
+            raise
         ssock.settimeout(_left())
         ssock.sendall(
             b"GET /cdn-cgi/trace HTTP/1.1\r\n"
@@ -484,9 +497,10 @@ def check_https_direct(ip: str, timeout: int = 8, deadline: float | None = None)
                 "success": True,
                 "supports_ipv4": True,
                 "latency_ms": latency,
-                "country": country or "US",
+                # trace 没给 loc 就是未知，不能默认 US，否则非目标地区 IP 会混进 us.txt
+                "country": country,
                 "colo": None,
-                "cf_bot_score": 95,
+                "cf_bot_score": None,
                 "method": "direct_https",
                 "fallback_unverified": True,
             }
@@ -636,7 +650,7 @@ def probe_throughput(ip: str, byte_budget: int = THROUGHPUT_BYTES, timeout: int 
             elapsed = time.monotonic() - began
             if elapsed >= timeout:
                 break
-            if elapsed >= THROUGHPUT_ABORT_S and received / max(elapsed, 1e-6) < THROUGHPUT_ABORT_MBPS:
+            if throughput_too_slow(received, elapsed):
                 break
             try:
                 chunk = ssock.recv(65536)
@@ -667,6 +681,14 @@ def probe_throughput(ip: str, byte_budget: int = THROUGHPUT_BYTES, timeout: int 
             except OSError:
                 pass
     return result
+
+
+def throughput_too_slow(received_bytes: int, elapsed_s: float) -> bool:
+    """测速 THROUGHPUT_ABORT_S 秒后仍低于 THROUGHPUT_ABORT_MBPS（MB/s）就提前放弃。
+    注意单位：received 是字节，要先换成 MB 再除以秒，之前直接拿字节/秒比 0.4 永远不成立。"""
+    if elapsed_s < THROUGHPUT_ABORT_S:
+        return False
+    return received_bytes / 1_000_000 / max(elapsed_s, 1e-6) < THROUGHPUT_ABORT_MBPS
 
 
 def apply_throughput(item: dict, throughput: dict) -> dict:
@@ -729,7 +751,7 @@ def exit_info(item: dict) -> dict:
             "country": item.get("country"),
             "colo": item.get("colo"),
             "botManagement": {
-                "score": item.get("cf_bot_score", 95),
+                "score": item.get("cf_bot_score"),
                 "corporateProxy": False,
                 "verifiedBot": False,
             },
@@ -795,7 +817,8 @@ def enrich(item: dict, source_meta: dict | None = None, stability: dict | None =
         "asn": ex.get("asn"),
         "as_organization": ex.get("asOrganization") or ex.get("org"),
         "exit_ip": ex.get("ip"),
-        "country": ex.get("country") or source_meta.get("country_hint"),
+        # 兜底验证拿不到出口地区时保持未知，不能用来源提示冒充已验证地区
+        "country": ex.get("country") or (None if fallback else source_meta.get("country_hint")),
         "city": ex.get("city"),
         "candidate_colo": item.get("colo"),
         "exit_colo": ex.get("colo"),
@@ -970,6 +993,10 @@ def refresh_throughput(item: dict, history: dict, local: dict | None) -> None:
         entry = (local.get("throughput") or {}).get(ip)
         if isinstance(entry, dict) and entry.get("ok"):
             local_mbps = entry.get("mbps")
+    # 本机文件整体 7 天有效，但吞吐和 CI 历史一样只信 THROUGHPUT_MAX_AGE_HOURS 内的
+    local_age = local.get("_age_hours") if isinstance(local, dict) else None
+    if isinstance(local_age, (int, float)) and local_age > THROUGHPUT_MAX_AGE_HOURS:
+        local_mbps = None
     eff = combine_throughput(item.get("throughput_mbps"), local_mbps, history_mbps)
     item["eff_throughput_mbps"] = eff
     if eff is None:
@@ -1121,6 +1148,49 @@ def select_current(valid: list[dict], all_results: list[dict]) -> tuple[dict, di
             }
             current_item["selection_reason"] = "kept_current_ip_still_healthy" if quality_ok else "kept_current_ip_quality_cooldown"
             return current_item, state, history
+
+        # 主 IP 仍可用、只是质量不达标且已过冷却：这不是故障，不走失败计数。
+        # 有过质量门槛的候选就立即切换；没有就继续用它，避免换成更差的。
+        # 替代者必须同时过排序门槛和主 IP 门槛（含吞吐），否则可能换成更慢的
+        better = next((x for x in best if x["ip"] != previous_ip and passes_quality_gate(x) and current_quality_ok(x)), None)
+        if better is None:
+            state = {
+                **previous_state,
+                "current_ip": previous_ip,
+                "status": "degraded_quality_no_better",
+                "failure_count": 0,
+                "last_success_at": now,
+                "last_checked_at": now,
+                "last_error": "current ip below quality threshold and no better candidate passes the gate",
+                "failover_threshold": FAILOVER_THRESHOLD,
+                "quality_threshold": {"min_bot_score": CURRENT_MIN_BOT_SCORE, "max_latency_ms": CURRENT_MAX_LATENCY_MS},
+                "switch_cooldown_hours": SWITCH_COOLDOWN_HOURS,
+            }
+            current_item["selection_reason"] = "kept_current_ip_no_better_candidate"
+            return current_item, state, history
+        better["selection_reason"] = "switched_quality_below_threshold"
+        state = {
+            "current_ip": better["ip"],
+            "status": "healthy",
+            "failure_count": 0,
+            "first_selected_at": now,
+            "last_switch_at": now,
+            "last_success_at": now,
+            "last_checked_at": now,
+            "last_error": None,
+            "failover_threshold": FAILOVER_THRESHOLD,
+            "previous_ip": previous_ip,
+        }
+        history = ([{
+            "switched_at": now,
+            "from": previous_ip,
+            "to": better["ip"],
+            "reason": "quality_below_threshold",
+            "failure_count": 0,
+            "new_score": better.get("stable_score"),
+            "new_risk": better.get("risk"),
+        }] + history)[:100]
+        return better, state, history
 
     failure_count = int(previous_state.get("failure_count") or 0) + (1 if previous_ip else 0)
     if previous_ip and failure_count < FAILOVER_THRESHOLD:

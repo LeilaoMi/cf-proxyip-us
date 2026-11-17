@@ -66,7 +66,7 @@ PUT /client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values
 | KV Namespace ID | `wrangler.toml` |
 | KV key 列表 | `docs/kv-manifest.json` |
 
-`docs/kv-manifest.json` 里 `result_json` 指向 `docs/full.json`，但上传前脚本会把内容读出来、再跑一遍 `slim_full()`（剔除 `all_results`）写到 `docs/full.slim.json`，然后 PUT 这个瘦身版。由于 `docs/full.json` 生成时已经剔过 `all_results` 和 `throughput_by_ip`，实际差异主要是重新按 `indent=2` 序列化。`docs/full.slim.json` 已 gitignore，不要提交。
+`docs/kv-manifest.json` 里 `result_json` 指向 `docs/full.json`，`sync_kv.py` 直接上传该文件（生成时已剔除 `all_results` 和 `throughput_by_ip`，不再另存瘦身版）。
 
 不要再改回 `wrangler kv key put`，否则可能再次触发 Wrangler 在 CI 中访问 `/memberships`、`/accounts` 导致认证失败。
 

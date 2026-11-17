@@ -1,61 +1,27 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
-from http.cookiejar import CookieJar
 from pathlib import Path
-from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
+from _common import LIST_DOMAIN, PROXY_DOMAIN, fetch, hmac_token, wrangler_cmd
 
-def wrangler_cmd() -> str:
-    """优先用仓库 node_modules/.bin 里按 package-lock 锁定的 wrangler。
-    shutil.which 在 Windows 上会按 PATHEXT 解析出 wrangler.cmd，subprocess 直接传 "wrangler" 解析不到。"""
-    local_bin = Path(__file__).resolve().parent.parent / "node_modules" / ".bin"
-    return shutil.which("wrangler", path=str(local_bin)) or shutil.which("wrangler") or "wrangler"
-
-
-def hmac_token() -> str:
-    secret = os.environ.get("PROXYIP_HMAC_SECRET", "")
-    if secret:
-        date_str = time.strftime("%Y%m%d", time.gmtime())
-        return f"{date_str}-{hmac.new(secret.encode(), date_str.encode(), hashlib.sha256).hexdigest()}"
-
-    jar = CookieJar()
-    opener = build_opener(HTTPCookieProcessor(jar))
-    opener.open(Request(f"{LIST_DOMAIN}/", headers={"User-Agent": "Mozilla/5.0"}), timeout=30).read()
-    with opener.open(Request(f"{LIST_DOMAIN}/token", headers={"User-Agent": "Mozilla/5.0"}), timeout=30) as res:
-        data = json.loads(res.read().decode("utf-8", "ignore"))
-    token = data.get("token")
-    if not token:
-        raise SystemExit("Cannot obtain HMAC token from /token")
-    return token
-
-LIST_DOMAIN = os.environ.get("PROXYIP_LIST_DOMAIN", "https://list.leilaomi.cc.cd").rstrip("/")
-PROXY_DOMAIN = os.environ.get("PROXYIP_RECORD_NAME", "proxyip.leilaomi.cc.cd")
+PUSH_ATTEMPTS = 3
+DATA_FILES = [
+    "docs/all.txt", "docs/base64.txt", "docs/best.txt", "docs/current.json", "docs/current.txt",
+    "docs/dns-records.json", "docs/full.json", "docs/history.json", "docs/ip_history.json",
+    "docs/kv-manifest.json", "docs/standby.txt", "docs/state.json", "docs/top5.txt", "docs/us.txt",
+    "docs/v2ray.txt",
+]
 
 
 def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     print("$", " ".join(cmd), flush=True)
     return subprocess.run(cmd, text=True, check=check)
-
-
-def fetch(url: str, token: str | None = None) -> tuple[int, str]:
-    headers = {"User-Agent": "Mozilla/5.0"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = Request(url, headers=headers)
-    try:
-        with urlopen(req, timeout=45) as res:
-            return res.status, res.read().decode("utf-8", "ignore")
-    except Exception as exc:
-        return getattr(exc, "code", 0) or 0, str(exc)
 
 
 def current_primary() -> str | None:
@@ -86,7 +52,7 @@ def verify_live() -> None:
     expected = [primary]
     # Wait up to 20 attempts × 10s for current.txt to match
     for attempt in range(1, 21):
-        status, body = fetch(f"{LIST_DOMAIN}/current.txt?r={int(time.time())}", token)
+        status, body = fetch(f"{LIST_DOMAIN}/current.txt?r={int(time.time())}", token, timeout=45)
         if status == 200:
             live = [x.strip() for x in body.splitlines() if x.strip()]
             if live == expected:
@@ -101,12 +67,50 @@ def verify_live() -> None:
         print("⚠️  Live current.txt verification timed out, DNS will sync in background", flush=True)
 
     # Verify health endpoint
-    status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token)
+    status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token, timeout=45)
     if status == 200:
-        health = json.loads(body)
-        print(f"✅ Health: {json.dumps(health)}", flush=True)
+        print(f"✅ Health: {body.strip()[:500]}", flush=True)
     else:
         print(f"⚠️  Health endpoint not ready: {status}", flush=True)
+
+
+def unpushed_commits() -> int:
+    """本地领先 origin/main 的提交数；上一轮推送失败留下的提交也要在这一轮推上去。"""
+    run(["git", "fetch", "origin", "main"], check=False)
+    out = subprocess.run(["git", "rev-list", "--count", "origin/main..HEAD"], text=True, capture_output=True)
+    if out.returncode != 0:
+        # 比较失败时不能当作“没有要推送的提交”，否则遗留提交会被静默丢下
+        raise RuntimeError(f"git rev-list origin/main..HEAD failed: {out.stderr.strip()}")
+    return int(out.stdout.strip() or 0)
+
+
+def commit_and_push(after: str | None) -> None:
+    # “要不要提交”看暂存区，“要不要推送”看是否领先远端，两件事分开判断
+    if git_dirty():
+        run(["git", "config", "user.name", "github-actions[bot]"])
+        run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
+        run(["git", "add", *DATA_FILES])
+        staged = subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode != 0
+        if staged:
+            valid_count = len([x for x in Path("docs/all.txt").read_text().splitlines() if x.strip()])
+            # 有变更时提交失败（例如 hook 拒绝）必须让任务失败，不能当作“没有变更”
+            run(["git", "commit", "-m", f"Auto refresh ProxyIP data: current={after} valid={valid_count}"])
+    if unpushed_commits() == 0:
+        print("Nothing to push", flush=True)
+        return
+    for attempt in range(1, PUSH_ATTEMPTS + 1):
+        pulled = run(["git", "pull", "--rebase", "--autostash", "origin", "main"], check=False)
+        if pulled.returncode == 0 and run(["git", "push"], check=False).returncode == 0:
+            return
+        if pulled.returncode != 0:
+            run(["git", "rebase", "--abort"], check=False)
+        print(f"push attempt {attempt}/{PUSH_ATTEMPTS} failed", flush=True)
+        if attempt < PUSH_ATTEMPTS:
+            time.sleep(5 * attempt)
+    raise SystemExit(
+        f"LIVE DATA UPDATED (current={after}) BUT STATE WAS NOT PUSHED; "
+        "fix the repo and rerun, otherwise the next round starts from stale state.json"
+    )
 
 
 def main() -> None:
@@ -127,24 +131,14 @@ def main() -> None:
     run([sys.executable, "scripts/sync_kv.py"])
     run([sys.executable, "scripts/sync_dns.py"])
 
-    # Step 3: Verify
+    # Step 3: 线上已经切换，立刻提交 state，再做验证/审计。
+    # 以前是验证、审计都通过后才提交：任何一步失败，线上已切但 state.json 没进仓库，
+    # 下一轮从旧状态出发，failure_count / last_switch_at 全错，可能重复切换或绕过冷却。
+    commit_and_push(after)
+
+    # Step 4: Verify
     verify_live()
     run([sys.executable, "scripts/audit.py"])
-
-    # Step 4: Git commit if changed
-    changed = before != after or git_dirty()
-    if changed:
-        run(["git", "config", "user.name", "github-actions[bot]"])
-        run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
-        run(["git", "add", "docs/all.txt", "docs/base64.txt", "docs/best.txt", "docs/current.json", "docs/current.txt", "docs/dns-records.json", "docs/full.json", "docs/history.json", "docs/ip_history.json", "docs/kv-manifest.json", "docs/standby.txt", "docs/state.json", "docs/top5.txt", "docs/us.txt", "docs/v2ray.txt"])
-        valid_count = len([x for x in Path("docs/all.txt").read_text().splitlines() if x.strip()])
-        message = f"Auto refresh ProxyIP data: current={after} valid={valid_count}"
-        commit = run(["git", "commit", "-m", message], check=False)
-        if commit.returncode == 0:
-            run(["git", "pull", "--rebase", "--autostash", "origin", "main"])
-            run(["git", "push"])
-        else:
-            print("No commit created; skipping push", flush=True)
 
     summary = {
         "changed_current": before != after,

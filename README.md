@@ -59,7 +59,7 @@ curl -b c.txt -A Mozilla/5.0 https://list.leilaomi.cc.cd/token                # 
 curl -H "Authorization: Bearer <TOKEN>" https://list.leilaomi.cc.cd/all.txt   # 程序化访问
 ```
 
-- 常见 bot、curl、wget、python-requests 等 UA 在没有合法 Token 时直接 403（Cookie 也不行），所以脚本请用 Bearer Token。
+- 常见 bot、curl、wget、python-requests 等 UA 在没有合法 Token 时直接 403（Cookie 也不行），所以脚本请用 Bearer Token。UA 由客户端自报，改 UA 就能绕过，这一条只挡默认配置的爬虫。
 - Token 也可以用 `?t=<TOKEN>` 传，但不推荐。
 - Worker Secret `PROXYIP_SECRET` 未配置时不签发 Cookie，只能使用 `ALLOW_LEGACY_DATE_TOKEN=1` 的旧日期 Token（默认关闭）。
 
@@ -84,8 +84,8 @@ GitHub Actions（cron 17 */3 * * * UTC，也可手动触发）
      ├─ wrangler deploy   每次运行都会部署（不管 worker.js 有没有改动）；放在最前，失败时线上数据不动
      ├─ sync_kv.py        Cloudflare REST API 写 13 个 KV key
      ├─ sync_dns.py       Cloudflare REST API 把 A 记录改成主 IP
-     ├─ 线上验证 + audit.py
-     └─ git commit/push docs/ 数据快照
+     ├─ git commit/push docs/ 数据快照（线上一变就先提交，失败重试 3 次）
+     └─ 线上验证 + audit.py
 
 Cloudflare：Worker cf-proxyip-us（只读 KV 分发，不做扫描）· KV PROXYIP_KV · DNS-only A proxyip.leilaomi.cc.cd
 ```
@@ -207,10 +207,12 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 |---|---|
 | 主 IP 通过验证且满足主 IP 门槛（bot score ≥ 80、延迟 ≤ 2500 ms、吞吐 ≥ 1 MB/s、仍在 US、稳定性达标、不是 fallback） | 保留，`status=healthy`，`failure_count` 清零 |
 | 主 IP 质量不达标，但距上次切换不到 6 小时 | 保留，`status=degraded_quality_cooldown` |
+| 主 IP 质量不达标、已过冷却，且有候选过质量门槛 | 立即切换，`history.json` 记 `reason=quality_below_threshold`，不计失败次数 |
+| 主 IP 质量不达标、已过冷却，但没有候选过质量门槛 | 保留，`status=degraded_quality_no_better` |
 | 主 IP 没通过验证 | 保留，`status=degraded`，`failure_count+1`；沿用上一轮的国家/ASN 并标记 `risk.stale=true`，审计放行，这样计数才会被提交 |
 | 连续失败达到 `PROXYIP_FAILOVER_THRESHOLD`（默认 2） | 切到排名第一的候选，写入 `history.json` |
 
-- **不会主动升级**：主 IP 只要健康，即使排名已经掉到中游、前面有快得多的候选，也不会切换。
+- **不会主动升级**：主 IP 只要过主 IP 门槛，即使排名已经掉到中游、前面有快得多的候选，也不会切换。
 - 按实际调度间隔（见下一节），一个失效的主 IP 通常要等两轮、也就是十几个小时才会被换掉。客户端可以用 `/standby.txt` 自己做兜底。
 - DNS 永远只发布 1 个 IP；备用池只通过 Worker 分发。
 
@@ -221,7 +223,7 @@ git add docs/probe_local.json && git commit -m "Refresh local probe" && git push
 - **设计**：每 3 小时一次（`17 */3 * * *` UTC）。
 - **实际**：GitHub 的定时任务经常延迟或被跳过，实测平均约 6–7 小时一轮，最长超过 10 小时。急用时去 Actions 页面手动 *Run workflow*。
 - 合并到 `main` **不会**触发运行（没有 push 触发器），新代码在下一次运行时生效。
-- 每次运行顺序：语法检查 → `build_dataset.py` → 校验 + 单元测试 → `auto_update.py`（`wrangler deploy` → 同步 KV → 同步 DNS → 线上验证 → `audit.py` → 按白名单提交 `docs/`）。
+- 每次运行顺序：语法检查 → `build_dataset.py` → 校验 + 单元测试 → `auto_update.py`（`wrangler deploy` → 同步 KV → 同步 DNS → 按白名单提交并推送 `docs/`（失败重试 3 次）→ 线上验证 → `audit.py`）。
 - 环境：Node 24、Python 3.12（workflow 里用 setup-node / setup-python 固定）；wrangler 按 `package-lock.json` 用 `npm ci` 安装，要求 Node ≥ 22.12（`package.json` 的 `engines`）。
 - `wrangler deploy` 在写 KV / DNS 之前，Node 或 wrangler 出问题时线上数据保持不变。但 KV / DNS 写入仍在审计和 git push **之前**：审计或推送失败时，线上已经更新，仓库里的 `state.json` 是旧的。
 - **PR 检查**（`.github/workflows/ci.yml`，PR 和 main）：语法检查、单元测试、`npm ci`、`wrangler deploy --dry-run`，不需要 secret。Dependabot 升级 wrangler 或 Actions 的 PR 也会经过它；`security.yml` 另跑 gitleaks、semgrep、zizmor、dependency-review、ruff、basedpyright。
@@ -392,7 +394,7 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 
 ### 5. Actions 变红但线上没切换
 
-先看 `docs/state.json` 的 `status` 和 `failure_count`。`degraded` 表示主 IP 本轮验证失败，下一轮仍失败就会 failover。如果 `failure_count` 一直不涨，说明 `audit.py` 或 git push 失败了，计数没有被提交。
+先看 `docs/state.json` 的 `status` 和 `failure_count`。`degraded` 表示主 IP 本轮验证失败，下一轮仍失败就会 failover。如果 `failure_count` 一直不涨，说明 git push 失败了（日志会有 `STATE WAS NOT PUSHED`），计数没有被提交。
 
 ### 6. 「Generate, validate, and test outputs」失败
 
@@ -421,7 +423,7 @@ A request to the Cloudflare API (/accounts) failed. Invalid access token [code: 
 | `docs/archive/` | 2026-06 审计与计划，只作历史参考 |
 | `AGENTS.md` | 维护约定和线上操作禁令 |
 
-不进仓库：`docs/full.slim.json`（KV 上传前的瘦身版）、根目录 `result.json`（含 `all_results` 的调试输出）。
+不进仓库：根目录 `result.json`（含 `all_results` 的调试输出）。
 
 ## 历史与归档
 

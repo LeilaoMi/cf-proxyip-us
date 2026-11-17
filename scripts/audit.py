@@ -1,62 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
-import os
-import shutil
 import socket
 import subprocess
 import sys
 import time
-from http.cookiejar import CookieJar
 from pathlib import Path
-from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
+
+from _common import LIST_DOMAIN, PROXY_DOMAIN, fetch, hmac_token, kv_namespace_id, wrangler_cmd
 
 HEALTH_RETRY_ATTEMPTS = 10
 HEALTH_RETRY_DELAY_S = 10
-
-
-def wrangler_cmd() -> str:
-    """优先用仓库 node_modules/.bin 里按 package-lock 锁定的 wrangler。
-    shutil.which 在 Windows 上会按 PATHEXT 解析出 wrangler.cmd，subprocess 直接传 "wrangler" 解析不到。"""
-    local_bin = Path(__file__).resolve().parent.parent / "node_modules" / ".bin"
-    return shutil.which("wrangler", path=str(local_bin)) or shutil.which("wrangler") or "wrangler"
-
-LIST_DOMAIN = os.environ.get("PROXYIP_LIST_DOMAIN", "https://list.leilaomi.cc.cd").rstrip("/")
-PROXY_DOMAIN = os.environ.get("PROXYIP_RECORD_NAME", "proxyip.leilaomi.cc.cd")
-KV_NAMESPACE_ID = "6d911271a65f4e67a39e22d991edb961"
 TARGET_COUNTRIES = {"US"}
-
-
-def hmac_token() -> str:
-    """Generate or fetch today's HMAC token, matching the Worker's verifier."""
-    secret = os.environ.get("PROXYIP_HMAC_SECRET", "")
-    if secret:
-        date_str = time.strftime("%Y%m%d", time.gmtime())
-        return f"{date_str}-{hmac.new(secret.encode(), date_str.encode(), hashlib.sha256).hexdigest()}"
-
-    jar = CookieJar()
-    opener = build_opener(HTTPCookieProcessor(jar))
-    opener.open(Request(f"{LIST_DOMAIN}/", headers={"User-Agent": "Mozilla/5.0 ProxyIPAudit"}), timeout=30).read()
-    with opener.open(Request(f"{LIST_DOMAIN}/token", headers={"User-Agent": "Mozilla/5.0 ProxyIPAudit"}), timeout=30) as res:
-        data = json.loads(res.read().decode("utf-8", "ignore"))
-    token = data.get("token")
-    if not token:
-        raise SystemExit("Cannot obtain HMAC token from /token")
-    return token
-
-def fetch(url: str, token: str | None = None) -> tuple[int, str]:
-    headers = {"User-Agent": "Mozilla/5.0 ProxyIPAudit"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = Request(url, headers=headers)
-    try:
-        with urlopen(req, timeout=30) as res:
-            return res.status, res.read().decode("utf-8", "ignore")
-    except Exception as exc:
-        return getattr(exc, "code", 0) or 0, str(exc)
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -75,7 +31,7 @@ def dns_ips() -> list[str]:
 def kv_get(key: str) -> str:
     return subprocess.check_output([
         wrangler_cmd(), "kv", "key", "get", key,
-        "--namespace-id", KV_NAMESPACE_ID,
+        "--namespace-id", kv_namespace_id(),
         "--remote",
     ], text=True).strip()
 
@@ -122,7 +78,10 @@ def main() -> None:
     for attempt in range(1, HEALTH_RETRY_ATTEMPTS + 1):
         status, body = fetch(f"{LIST_DOMAIN}/health/full?r={int(time.time())}", token)
         if status == 200:
-            health = json.loads(body)
+            try:
+                health = json.loads(body)
+            except json.JSONDecodeError:
+                health = {}
             if health.get("current") == current:
                 break
         if attempt < HEALTH_RETRY_ATTEMPTS:
@@ -136,7 +95,7 @@ def main() -> None:
     status_bad, _ = fetch(f"{LIST_DOMAIN}/all.txt?t={old_token}&r={int(time.time())}")
     assert_true(status_bad == 403, f"Old YYYYMMDD token should be rejected but got HTTP {status_bad}")
 
-    # Unauthenticated check
+    # 无 cookie/token 的直连应被拦（防爬减速带是否生效；不代表数据保密，首页会给任何访客发 cookie）
     status_noauth, _ = fetch(f"{LIST_DOMAIN}/all.txt?r={int(time.time())}")
     assert_true(status_noauth == 403, f"Unauthenticated request should be rejected but got HTTP {status_noauth}")
 

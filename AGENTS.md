@@ -27,7 +27,7 @@
 - README 示例中只能使用 `<Cloudflare API Token>`、`<HMAC Secret>` 等占位符。
 - `docs/full.json`、`docs/ip_history.json`、`docs/state.json` 是数据产物，由脚本生成；改动只应来自脚本，不要手改。
 - `docs/probe_local.json` 由本机 `PROXYIP_PROBE_ONLY=1` 运行负责提交，CI 的 `git add` 白名单里没有它，不要把它加进白名单覆盖。
-- `docs/full.slim.json` 和根目录 `result.json` 是中间产物，已 gitignore，不要提交。
+- 根目录 `result.json` 是中间产物，已 gitignore，不要提交。
 
 ## 排序管线（四阶段）
 
@@ -58,6 +58,8 @@ KV 同步不再使用 `wrangler kv key put`，避免 CI 中 Wrangler 额外请�
 | `scripts/auto_update.py` | CI 端到端自动流程：同步、部署、线上验证、审计、提交 |
 | `scripts/sync_kv.py` | 使用 Cloudflare REST API 同步 KV |
 | `scripts/sync_dns.py` | 使用 Cloudflare REST API 同步 DNS-only A 记录 |
+| `data/cloudflare-ips-v4.txt` | CF 官方 IPv4 段快照，仅在线拉取失败时用于过滤；CF 更新段时整份替换 |
+| `scripts/_common.py` | auto_update / audit / sync_kv 共用：HMAC token、fetch、wrangler 路径、按 TOML 读 KV namespace id |
 | `scripts/validate_outputs.py` | 本地输出一致性校验 |
 | `scripts/audit.py` | 部署后审计 |
 | `tests/test_build_dataset.py` | 单元测试：探测、门槛、稳定性历史、吞吐、本地探测、输出形状 |
@@ -122,7 +124,7 @@ Cloudflare Worker 需要：
 
 ## 线上现状
 
-- 分发（Worker）：https://list.leilaomi.cc.cd （README「接口」表里的数据接口及 `/stats`、`/health/full`、`/token` 需签名 Cookie 或 HMAC Token；`/`、`/health`、`/robots.txt` 公开，未匹配的路径直接返回首页）
+- 分发（Worker）：https://list.leilaomi.cc.cd （README「接口」表里的数据接口及 `/stats`、`/health/full`、`/token` 需签名 Cookie 或 HMAC Token；`/`、`/health`、`/robots.txt` 公开，未匹配的路径直接返回首页）。Cookie + UA 拦截只是防爬减速带，不是访问控制：首页向任何访客签发 Cookie，同样数据也在公开仓库 `docs/` 里。不要在文档、审计或提交说明里把它称为鉴权/保密
 - 实际 ProxyIP：`proxyip.leilaomi.cc.cd`，DNS-only 单 A 记录，不提供 HTTP 页面
 - 健康检查：https://list.leilaomi.cc.cd/health
 - KV：13 个 key，见 `docs/kv-manifest.json`
