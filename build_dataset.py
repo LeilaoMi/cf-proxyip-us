@@ -49,13 +49,8 @@ PROXYIP_DOMAIN_SOURCES = [
 ]
 
 CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4"
-# 拉取失败时的兜底，避免过滤静默失效、官方 IP 混进候选。来源同上，2026-11 快照。
-CLOUDFLARE_IPS_V4_FALLBACK = (
-    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
-    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
-    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
-    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
-)
+# 拉取失败时的兜底快照，避免过滤静默失效、官方 IP 混进候选。内容与 CLOUDFLARE_IPS_V4_URL 一致，更新时整份替换。
+CLOUDFLARE_IPS_V4_FALLBACK_PATH = Path(__file__).resolve().parent / "data" / "cloudflare-ips-v4.txt"
 # 第三方 ProxyIP 检测接口（cmliu/CF-Workers-CheckProxyIP），按顺序尝试；前一个出错或自身故障时换下一个。
 # 2026-10-21 上游加入 API_HOST，官方页面改为调用 api.check.proxyip.cmliussss.net，
 # 但截至 2026-11-07 该域名与 api.090227.xyz 一样跑在 Cloudflare Snippets 上（connect() 不可用），
@@ -180,7 +175,8 @@ def load_cloudflare_ipv4_networks() -> list[ipaddress.IPv4Network]:
         raise ValueError("empty Cloudflare IPv4 range list")
     except Exception as exc:
         print(f"warning: failed to load Cloudflare IPv4 ranges ({exc}); using bundled snapshot", flush=True)
-        return [ipaddress.IPv4Network(x) for x in CLOUDFLARE_IPS_V4_FALLBACK]
+        text = CLOUDFLARE_IPS_V4_FALLBACK_PATH.read_text(encoding="utf-8")
+        return [ipaddress.IPv4Network(line.strip()) for line in text.splitlines() if line.strip() and not line.startswith("#")]
 
 
 def is_cloudflare_official_ip(ip: str, networks: list[ipaddress.IPv4Network]) -> bool:

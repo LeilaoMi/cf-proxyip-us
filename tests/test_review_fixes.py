@@ -1,7 +1,6 @@
 """2026-11 代码审查修复的回归测试。"""
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import tempfile
@@ -10,12 +9,11 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("build_dataset_fix", ROOT / "build_dataset.py")
-bd = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(bd)
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import _common  # noqa: E402
+
+import build_dataset as bd  # noqa: E402
 
 WORKER = (ROOT / "worker.js").read_text(encoding="utf-8")
 
@@ -46,10 +44,11 @@ class QualitySwitchTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         docs = Path(tmp.name)
-        saved = (bd.DOCS, bd.STATE_PATH, bd.CURRENT_PATH, bd.HISTORY_PATH)
-        bd.DOCS, bd.STATE_PATH, bd.CURRENT_PATH, bd.HISTORY_PATH = docs, docs / "state.json", docs / "current.txt", docs / "history.json"
-        self.addCleanup(lambda: setattr(bd, "DOCS", saved[0]) or setattr(bd, "STATE_PATH", saved[1])
-                        or setattr(bd, "CURRENT_PATH", saved[2]) or setattr(bd, "HISTORY_PATH", saved[3]))
+        for name, value in (("DOCS", docs), ("STATE_PATH", docs / "state.json"),
+                            ("CURRENT_PATH", docs / "current.txt"), ("HISTORY_PATH", docs / "history.json")):
+            patcher = mock.patch.object(bd, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         (docs / "state.json").write_text(json.dumps({
             "current_ip": "9.9.9.9", "status": "healthy", "failure_count": 0,
             "last_switch_at": "2020-01-01T00:00:00+00:00"}), encoding="utf-8")

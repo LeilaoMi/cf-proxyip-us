@@ -58,6 +58,7 @@ KV 同步不再使用 `wrangler kv key put`，避免 CI 中 Wrangler 额外请�
 | `scripts/auto_update.py` | CI 端到端自动流程：同步、部署、线上验证、审计、提交 |
 | `scripts/sync_kv.py` | 使用 Cloudflare REST API 同步 KV |
 | `scripts/sync_dns.py` | 使用 Cloudflare REST API 同步 DNS-only A 记录 |
+| `data/cloudflare-ips-v4.txt` | CF 官方 IPv4 段快照，仅在线拉取失败时用于过滤；CF 更新段时整份替换 |
 | `scripts/_common.py` | auto_update / audit / sync_kv 共用：HMAC token、fetch、wrangler 路径、按 TOML 读 KV namespace id |
 | `scripts/validate_outputs.py` | 本地输出一致性校验 |
 | `scripts/audit.py` | 部署后审计 |
