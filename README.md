@@ -59,7 +59,7 @@ curl -b c.txt -A Mozilla/5.0 https://list.leilaomi.cc.cd/token                # 
 curl -H "Authorization: Bearer <TOKEN>" https://list.leilaomi.cc.cd/all.txt   # 程序化访问
 ```
 
-- 常见 bot、curl、wget、python-requests 等 UA 在没有合法 Token 时直接 403（Cookie 也不行），所以脚本请用 Bearer Token。
+- 常见 bot、curl、wget、python-requests 等 UA 在没有合法 Token 时直接 403（Cookie 也不行），所以脚本请用 Bearer Token。UA 由客户端自报，改 UA 就能绕过，这一条只挡默认配置的爬虫。
 - Token 也可以用 `?t=<TOKEN>` 传，但不推荐。
 - Worker Secret `PROXYIP_SECRET` 未配置时不签发 Cookie，只能使用 `ALLOW_LEGACY_DATE_TOKEN=1` 的旧日期 Token（默认关闭）。
 

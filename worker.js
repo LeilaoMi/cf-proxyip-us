@@ -227,6 +227,8 @@ async function loadTextKey(env, pathname) {
 }
 
 // ── Access control ──
+// 注意：这是防爬减速带，不是访问控制。首页向任何访客签发 cookie，UA 可伪造，
+// 数据也同时提交在公开仓库 docs/ 里。需要真正保密请用 Cloudflare Access。
 
 async function verifyAccess(request, url, env) {
   const token = bearerToken(request) || url.searchParams.get("t") || "";

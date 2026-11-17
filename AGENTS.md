@@ -123,7 +123,7 @@ Cloudflare Worker 需要：
 
 ## 线上现状
 
-- 分发（Worker）：https://list.leilaomi.cc.cd （README「接口」表里的数据接口及 `/stats`、`/health/full`、`/token` 需签名 Cookie 或 HMAC Token；`/`、`/health`、`/robots.txt` 公开，未匹配的路径直接返回首页）
+- 分发（Worker）：https://list.leilaomi.cc.cd （README「接口」表里的数据接口及 `/stats`、`/health/full`、`/token` 需签名 Cookie 或 HMAC Token；`/`、`/health`、`/robots.txt` 公开，未匹配的路径直接返回首页）。Cookie + UA 拦截只是防爬减速带，不是访问控制：首页向任何访客签发 Cookie，同样数据也在公开仓库 `docs/` 里。不要在文档、审计或提交说明里把它称为鉴权/保密
 - 实际 ProxyIP：`proxyip.leilaomi.cc.cd`，DNS-only 单 A 记录，不提供 HTTP 页面
 - 健康检查：https://list.leilaomi.cc.cd/health
 - KV：13 个 key，见 `docs/kv-manifest.json`

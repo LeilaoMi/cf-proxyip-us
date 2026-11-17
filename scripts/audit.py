@@ -95,7 +95,7 @@ def main() -> None:
     status_bad, _ = fetch(f"{LIST_DOMAIN}/all.txt?t={old_token}&r={int(time.time())}")
     assert_true(status_bad == 403, f"Old YYYYMMDD token should be rejected but got HTTP {status_bad}")
 
-    # Unauthenticated check
+    # 无 cookie/token 的直连应被拦（防爬减速带是否生效；不代表数据保密，首页会给任何访客发 cookie）
     status_noauth, _ = fetch(f"{LIST_DOMAIN}/all.txt?r={int(time.time())}")
     assert_true(status_noauth == 403, f"Unauthenticated request should be rejected but got HTTP {status_noauth}")
 
