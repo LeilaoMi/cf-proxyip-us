@@ -817,7 +817,8 @@ def enrich(item: dict, source_meta: dict | None = None, stability: dict | None =
         "asn": ex.get("asn"),
         "as_organization": ex.get("asOrganization") or ex.get("org"),
         "exit_ip": ex.get("ip"),
-        "country": ex.get("country") or source_meta.get("country_hint"),
+        # 兜底验证拿不到出口地区时保持未知，不能用来源提示冒充已验证地区
+        "country": ex.get("country") or (None if fallback else source_meta.get("country_hint")),
         "city": ex.get("city"),
         "candidate_colo": item.get("colo"),
         "exit_colo": ex.get("colo"),
@@ -1150,7 +1151,8 @@ def select_current(valid: list[dict], all_results: list[dict]) -> tuple[dict, di
 
         # 主 IP 仍可用、只是质量不达标且已过冷却：这不是故障，不走失败计数。
         # 有过质量门槛的候选就立即切换；没有就继续用它，避免换成更差的。
-        better = next((x for x in best if x["ip"] != previous_ip and passes_quality_gate(x)), None)
+        # 替代者必须同时过排序门槛和主 IP 门槛（含吞吐），否则可能换成更慢的
+        better = next((x for x in best if x["ip"] != previous_ip and passes_quality_gate(x) and current_quality_ok(x)), None)
         if better is None:
             state = {
                 **previous_state,

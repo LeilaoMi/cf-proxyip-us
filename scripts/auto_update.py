@@ -74,16 +74,26 @@ def verify_live() -> None:
         print(f"⚠️  Health endpoint not ready: {status}", flush=True)
 
 
-def commit_and_push(before: str | None, after: str | None) -> None:
-    if not (before != after or git_dirty()):
-        return
-    run(["git", "config", "user.name", "github-actions[bot]"])
-    run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
-    run(["git", "add", *DATA_FILES])
-    valid_count = len([x for x in Path("docs/all.txt").read_text().splitlines() if x.strip()])
-    commit = run(["git", "commit", "-m", f"Auto refresh ProxyIP data: current={after} valid={valid_count}"], check=False)
-    if commit.returncode != 0:
-        print("No commit created; skipping push", flush=True)
+def unpushed_commits() -> int:
+    """本地领先 origin/main 的提交数；上一轮推送失败留下的提交也要在这一轮推上去。"""
+    run(["git", "fetch", "origin", "main"], check=False)
+    out = subprocess.run(["git", "rev-list", "--count", "origin/main..HEAD"], text=True, capture_output=True)
+    return int(out.stdout.strip() or 0) if out.returncode == 0 else 0
+
+
+def commit_and_push(after: str | None) -> None:
+    # “要不要提交”看暂存区，“要不要推送”看是否领先远端，两件事分开判断
+    if git_dirty():
+        run(["git", "config", "user.name", "github-actions[bot]"])
+        run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"])
+        run(["git", "add", *DATA_FILES])
+        staged = subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode != 0
+        if staged:
+            valid_count = len([x for x in Path("docs/all.txt").read_text().splitlines() if x.strip()])
+            # 有变更时提交失败（例如 hook 拒绝）必须让任务失败，不能当作“没有变更”
+            run(["git", "commit", "-m", f"Auto refresh ProxyIP data: current={after} valid={valid_count}"])
+    if unpushed_commits() == 0:
+        print("Nothing to push", flush=True)
         return
     for attempt in range(1, PUSH_ATTEMPTS + 1):
         pulled = run(["git", "pull", "--rebase", "--autostash", "origin", "main"], check=False)
@@ -121,7 +131,7 @@ def main() -> None:
     # Step 3: 线上已经切换，立刻提交 state，再做验证/审计。
     # 以前是验证、审计都通过后才提交：任何一步失败，线上已切但 state.json 没进仓库，
     # 下一轮从旧状态出发，failure_count / last_switch_at 全错，可能重复切换或绕过冷却。
-    commit_and_push(before, after)
+    commit_and_push(after)
 
     # Step 4: Verify
     verify_live()

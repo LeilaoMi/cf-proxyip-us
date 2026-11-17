@@ -63,6 +63,13 @@ class QualitySwitchTest(unittest.TestCase):
         self.assertEqual(state["failure_count"], 0)
         self.assertEqual(history[0]["reason"], "quality_below_threshold")
 
+    def test_does_not_switch_to_slower_throughput_candidate(self) -> None:
+        cur = item("9.9.9.9", latency=100, mbps=0.5)  # 吞吐低于 1 MB/s 主 IP 门槛
+        slower = item("10.0.0.7", latency=90, mbps=0.1)
+        current, state, _ = bd.select_current([slower, cur], [])
+        self.assertEqual(current["ip"], "9.9.9.9")
+        self.assertEqual(state["status"], "degraded_quality_no_better")
+
     def test_keeps_current_when_no_candidate_passes_gate(self) -> None:
         slow = item("9.9.9.9", latency=4000)
         worse = item("10.0.0.3", latency=5000)
@@ -77,8 +84,9 @@ class FallbackVerificationTest(unittest.TestCase):
     def test_direct_https_without_loc_is_not_target_region(self) -> None:
         x = {"ip": "10.0.0.4", "success": True, "supports_ipv4": True, "latency_ms": 100,
              "country": None, "cf_bot_score": None, "method": "direct_https", "fallback_unverified": True}
-        bd.enrich(x, {"sources": ["s"]})
+        bd.enrich(x, {"sources": ["s"], "country_hint": "US"})
         self.assertIsNone(x["risk"]["cf_bot_score"])
+        self.assertIsNone(x["risk"]["country"])  # 来源提示不能冒充已验证地区
         self.assertFalse(bd.is_target_region(x))
 
 
@@ -122,8 +130,9 @@ class WorkerFixesTest(unittest.TestCase):
     def test_best_txt_n_bypasses_kv_text(self) -> None:
         self.assertIn('url.pathname === "/best.txt" && url.searchParams.has("n")', WORKER)
 
-    def test_kv_text_honours_if_none_match(self) -> None:
+    def test_kv_text_honours_if_none_match_with_same_max_age(self) -> None:
         self.assertIn('request.headers.get("if-none-match") === textEtag', WORKER)
+        self.assertIn("{ etag: textEtag } }), true, false, cacheSeconds)", WORKER)
 
     def test_hmac_cache_is_bounded(self) -> None:
         self.assertIn("HMAC_CACHE_MAX", WORKER)

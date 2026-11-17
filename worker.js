@@ -167,10 +167,11 @@ export default {
     const lightweightText = wantsCustomN ? null : await loadTextKey(env, url.pathname);
     if (lightweightText !== null) {
       const textEtag = etagForText(url.pathname, lightweightText);
-      if (request.headers.get("if-none-match") === textEtag) {
-        return reply(withHeaders(new Response(null, { status: 304, headers: { etag: textEtag } }), true));
-      }
+      // 200 和 304 必须给同样的 max-age，否则 304 会把 /current.txt 的 60s 缓存延长成 300s
       const cacheSeconds = url.pathname === "/current.txt" ? 60 : 300;
+      if (request.headers.get("if-none-match") === textEtag) {
+        return reply(withHeaders(new Response(null, { status: 304, headers: { etag: textEtag } }), true, false, cacheSeconds));
+      }
       return reply(withEtag(text(lightweightText, true, false, cacheSeconds), textEtag));
     }
 
