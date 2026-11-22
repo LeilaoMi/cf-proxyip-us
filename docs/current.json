@@ -1,21 +1,21 @@
 {
   "current": {
     "ip": "51.81.209.10",
-    "latency_ms": 77,
-    "rtt_p50_ms": 77,
-    "rtt_jitter_ms": 10,
+    "latency_ms": 136,
+    "rtt_p50_ms": 136,
+    "rtt_jitter_ms": 61,
     "rtt_samples": 3,
     "rtt_ok": true,
-    "api_latency_ms": 770,
-    "throughput_mbps": 20.777,
-    "eff_throughput_mbps": 20.777,
+    "api_latency_ms": 899,
+    "throughput_mbps": 13.968,
+    "eff_throughput_mbps": 13.968,
     "throughput_source": "measured",
     "local_rtt_p50_ms": null,
     "stability": {
       "check_count": 56,
       "success_rate_7d": 1.0,
       "effective_success_rate": 1.0,
-      "avg_latency_ms_recent": 83.12,
+      "avg_latency_ms_recent": 88.5,
       "gate_ok": true,
       "cold_start": false
     },
@@ -27,7 +27,7 @@
     "source_domains": [],
     "source_type": null,
     "source_count": 1,
-    "stable_score": 999395,
+    "stable_score": 999015,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -39,9 +39,9 @@
       "as_organization": "OVH US LLC",
       "country": "US",
       "city": "Hillsboro",
-      "candidate_colo": "LAX",
+      "candidate_colo": "MSP",
       "exit_colo": "SEA",
-      "penalty": 604.7411377966021
+      "penalty": 984.9487399770904
     }
   },
   "state": {
@@ -50,8 +50,8 @@
     "failure_count": 0,
     "first_selected_at": "2026-10-03T20:18:58.259569+00:00",
     "last_switch_at": "2026-10-03T20:18:58.259569+00:00",
-    "last_success_at": "2026-11-22T11:38:35.131921+00:00",
-    "last_checked_at": "2026-11-22T11:38:35.131921+00:00",
+    "last_success_at": "2026-11-22T19:49:35.410665+00:00",
+    "last_checked_at": "2026-11-22T19:49:35.410665+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": "43.170.25.96",
