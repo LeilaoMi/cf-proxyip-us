@@ -1,21 +1,21 @@
 {
   "current": {
     "ip": "51.81.209.10",
-    "latency_ms": 84,
-    "rtt_p50_ms": 84,
-    "rtt_jitter_ms": 34,
+    "latency_ms": 81,
+    "rtt_p50_ms": 81,
+    "rtt_jitter_ms": 4,
     "rtt_samples": 3,
     "rtt_ok": true,
-    "api_latency_ms": 1024,
-    "throughput_mbps": 18.6,
-    "eff_throughput_mbps": 18.6,
+    "api_latency_ms": 743,
+    "throughput_mbps": 20.769,
+    "eff_throughput_mbps": 20.769,
     "throughput_source": "measured",
     "local_rtt_p50_ms": null,
     "stability": {
       "check_count": 56,
       "success_rate_7d": 1.0,
       "effective_success_rate": 1.0,
-      "avg_latency_ms_recent": 89.38,
+      "avg_latency_ms_recent": 83.25,
       "gate_ok": true,
       "cold_start": false
     },
@@ -27,7 +27,7 @@
     "source_domains": [],
     "source_type": null,
     "source_count": 1,
-    "stable_score": 999282,
+    "stable_score": 999405,
     "verification_method": "cmliu",
     "selection_reason": "kept_current_ip_still_healthy",
     "risk": {
@@ -41,7 +41,7 @@
       "city": "Hillsboro",
       "candidate_colo": "LAX",
       "exit_colo": "SEA",
-      "penalty": 718.4405376344087
+      "penalty": 595.0005356540998
     }
   },
   "state": {
@@ -50,8 +50,8 @@
     "failure_count": 0,
     "first_selected_at": "2026-10-03T20:18:58.259569+00:00",
     "last_switch_at": "2026-10-03T20:18:58.259569+00:00",
-    "last_success_at": "2026-11-24T02:18:32.359214+00:00",
-    "last_checked_at": "2026-11-24T02:18:32.359214+00:00",
+    "last_success_at": "2026-11-24T13:54:55.979009+00:00",
+    "last_checked_at": "2026-11-24T13:54:55.979009+00:00",
     "last_error": null,
     "failover_threshold": 2,
     "previous_ip": "43.170.25.96",
